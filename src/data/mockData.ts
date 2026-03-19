@@ -110,16 +110,16 @@ export const safaricomReports = [
 ];
 
 export const reconciliationResults = [
-  { serial: "89254000100001", baName: "John Kamau", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100002", baName: "Mary Wanjiku", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100003", baName: "Peter Otieno", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100004", baName: "Grace Achieng", claimType: "Manual", safaricomStatus: "Active", fraudFlag: true, result: "Review", commission: 0 },
-  { serial: "89254000100005", baName: "John Kamau", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100006", baName: "David Mwangi", claimType: "Manual", safaricomStatus: "Not Found", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100007", baName: "Sarah Njeri", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100008", baName: "James Mutua", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: true, result: "Review", commission: 0 },
-  { serial: "89254000100009", baName: "Mary Wanjiku", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100010", baName: "John Kamau", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
+  { serial: "89254000100001", baName: "John Kamau", baPhone: "0712345678", agentPhone: "0798111222", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100002", baName: "Mary Wanjiku", baPhone: "0712345679", agentPhone: "0798111223", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100003", baName: "Peter Otieno", baPhone: "0712345680", agentPhone: "0798111224", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, baPhoneMatch: true, result: "Rejected", commission: 0 },
+  { serial: "89254000100004", baName: "Grace Achieng", baPhone: "0712345681", agentPhone: "0798111225", claimType: "Manual", safaricomStatus: "Active", fraudFlag: true, baPhoneMatch: true, result: "Review", commission: 0 },
+  { serial: "89254000100005", baName: "John Kamau", baPhone: "0712345678", agentPhone: "0798111226", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100006", baName: "Unknown", baPhone: "0799999999", agentPhone: "0798111227", claimType: "Manual", safaricomStatus: "Not Found", fraudFlag: false, baPhoneMatch: false, result: "Rejected", commission: 0 },
+  { serial: "89254000100007", baName: "Sarah Njeri", baPhone: "0712345683", agentPhone: "0798111228", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100008", baName: "James Mutua", baPhone: "0712345684", agentPhone: "0712345684", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: true, baPhoneMatch: true, result: "Review", commission: 0 },
+  { serial: "89254000100009", baName: "Mary Wanjiku", baPhone: "0712345679", agentPhone: "0798111230", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, baPhoneMatch: true, result: "Rejected", commission: 0 },
+  { serial: "89254000100010", baName: "Unknown", baPhone: "0788888888", agentPhone: "0798111231", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: false, result: "Rejected", commission: 0 },
 ];
 
 export const commissionData = [
@@ -136,7 +136,10 @@ export const commissionData = [
 export const fraudIncidents = [
   { id: 1, severity: "HIGH", type: "Duplicate Claim", description: "Same SIM claimed by two different BAs", serial: "89254000100004", ba: "Grace Achieng", time: "2 hours ago" },
   { id: 2, severity: "HIGH", type: "Safaricom Flag", description: "SIM flagged as fraudulent by Safaricom system", serial: "89254000100008", ba: "James Mutua", time: "4 hours ago" },
-  { id: 3, severity: "MEDIUM", type: "Unusual Pattern", description: "50 SIMs registered in 30 minutes — abnormal speed", serial: "Multiple", ba: "Sarah Njeri", time: "1 day ago" },
-  { id: 4, severity: "MEDIUM", type: "Wrong Dealer", description: "SIM registered under different dealer code", serial: "89254000100015", ba: "Mary Wanjiku", time: "1 day ago" },
-  { id: 5, severity: "LOW", type: "Late Registration", description: "SIM registered 30 days after issuance", serial: "89254000100022", ba: "David Mwangi", time: "3 days ago" },
+  { id: 3, severity: "HIGH", type: "Unknown BA Phone", description: "SIM registered by phone 0799999999 — not matching any BA in the system", serial: "89254000100006", ba: "Unknown (0799999999)", time: "3 hours ago" },
+  { id: 4, severity: "HIGH", type: "Agent = BA Fraud", description: "Agent MSISDN and BA MSISDN are the same number (0712345684) — one person acting as both agent and BA", serial: "89254000100008", ba: "James Mutua", time: "4 hours ago" },
+  { id: 5, severity: "MEDIUM", type: "Unusual Pattern", description: "50 SIMs registered in 30 minutes — abnormal speed", serial: "Multiple", ba: "Sarah Njeri", time: "1 day ago" },
+  { id: 6, severity: "MEDIUM", type: "Wrong Dealer", description: "SIM registered under different dealer code", serial: "89254000100015", ba: "Mary Wanjiku", time: "1 day ago" },
+  { id: 7, severity: "MEDIUM", type: "Unknown BA Phone", description: "SIM registered by phone 0788888888 — not matching any BA in the system", serial: "89254000100010", ba: "Unknown (0788888888)", time: "5 hours ago" },
+  { id: 8, severity: "LOW", type: "Late Registration", description: "SIM registered 30 days after issuance", serial: "89254000100022", ba: "David Mwangi", time: "3 days ago" },
 ];

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { reconciliationResults } from "@/data/mockData";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,7 @@ const tabs = ["All", "Payable", "Inactive", "Fraud Flagged", "Manual Review", "D
 
 export default function Reconciliation() {
   const [activeTab, setActiveTab] = useState("All");
-  const [step, setStep] = useState(0); // 0=idle, 1-4=running, 5=done
+  const [step, setStep] = useState(0);
 
   const filtered = activeTab === "All" ? reconciliationResults
     : activeTab === "Payable" ? reconciliationResults.filter(r => r.result === "Payable")
@@ -70,6 +70,7 @@ export default function Reconciliation() {
               <tr className="border-b border-border text-muted-foreground">
                 <th className="pb-3 text-left font-medium">Serial Number</th>
                 <th className="pb-3 text-left font-medium">BA Name</th>
+                <th className="pb-3 text-left font-medium">BA Phone Match</th>
                 <th className="pb-3 text-left font-medium">Claim Type</th>
                 <th className="pb-3 text-left font-medium">Safaricom Status</th>
                 <th className="pb-3 text-left font-medium">Fraud</th>
@@ -89,6 +90,13 @@ export default function Reconciliation() {
                 >
                   <td className="py-3 font-mono text-xs text-primary">{r.serial}</td>
                   <td className="py-3 text-foreground">{r.baName}</td>
+                  <td className="py-3">
+                    {r.baPhoneMatch ? (
+                      <CheckCircle2 className="h-4 w-4 text-success" />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-destructive" />
+                    )}
+                  </td>
                   <td className="py-3"><StatusBadge status={r.claimType} /></td>
                   <td className="py-3"><StatusBadge status={r.safaricomStatus} /></td>
                   <td className="py-3">{r.fraudFlag && <AlertTriangle className="h-4 w-4 text-destructive" />}</td>
