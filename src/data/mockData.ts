@@ -110,16 +110,16 @@ export const safaricomReports = [
 ];
 
 export const reconciliationResults = [
-  { serial: "89254000100001", baName: "John Kamau", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100002", baName: "Mary Wanjiku", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100003", baName: "Peter Otieno", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100004", baName: "Grace Achieng", claimType: "Manual", safaricomStatus: "Active", fraudFlag: true, result: "Review", commission: 0 },
-  { serial: "89254000100005", baName: "John Kamau", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100006", baName: "David Mwangi", claimType: "Manual", safaricomStatus: "Not Found", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100007", baName: "Sarah Njeri", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
-  { serial: "89254000100008", baName: "James Mutua", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: true, result: "Review", commission: 0 },
-  { serial: "89254000100009", baName: "Mary Wanjiku", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, result: "Rejected", commission: 0 },
-  { serial: "89254000100010", baName: "John Kamau", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, result: "Payable", commission: 100 },
+  { serial: "89254000100001", baName: "John Kamau", baPhone: "0712345678", agentPhone: "0798111222", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100002", baName: "Mary Wanjiku", baPhone: "0712345679", agentPhone: "0798111223", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100003", baName: "Peter Otieno", baPhone: "0712345680", agentPhone: "0798111224", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, baPhoneMatch: true, result: "Rejected", commission: 0 },
+  { serial: "89254000100004", baName: "Grace Achieng", baPhone: "0712345681", agentPhone: "0798111225", claimType: "Manual", safaricomStatus: "Active", fraudFlag: true, baPhoneMatch: true, result: "Review", commission: 0 },
+  { serial: "89254000100005", baName: "John Kamau", baPhone: "0712345678", agentPhone: "0798111226", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100006", baName: "Unknown", baPhone: "0799999999", agentPhone: "0798111227", claimType: "Manual", safaricomStatus: "Not Found", fraudFlag: false, baPhoneMatch: false, result: "Rejected", commission: 0 },
+  { serial: "89254000100007", baName: "Sarah Njeri", baPhone: "0712345683", agentPhone: "0798111228", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: true, result: "Payable", commission: 100 },
+  { serial: "89254000100008", baName: "James Mutua", baPhone: "0712345684", agentPhone: "0712345684", claimType: "Inferred", safaricomStatus: "Active", fraudFlag: true, baPhoneMatch: true, result: "Review", commission: 0 },
+  { serial: "89254000100009", baName: "Mary Wanjiku", baPhone: "0712345679", agentPhone: "0798111230", claimType: "Manual", safaricomStatus: "Inactive", fraudFlag: false, baPhoneMatch: true, result: "Rejected", commission: 0 },
+  { serial: "89254000100010", baName: "Unknown", baPhone: "0788888888", agentPhone: "0798111231", claimType: "Manual", safaricomStatus: "Active", fraudFlag: false, baPhoneMatch: false, result: "Rejected", commission: 0 },
 ];
 
 export const commissionData = [
