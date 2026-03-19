@@ -2,7 +2,7 @@ import { useLocation, Link } from "react-router-dom";
 import {
   LayoutDashboard, Layers, Share2, Users, FileText, GitMerge,
   DollarSign, ShieldAlert, BarChart3, Settings, Send, Building,
-  Truck, PlusCircle, ClipboardList, TrendingUp, Bell,
+  Truck, TrendingUp, Bell, CheckSquare,
   CreditCard, Clock, Download, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
