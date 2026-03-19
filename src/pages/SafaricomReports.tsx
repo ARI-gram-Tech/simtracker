@@ -3,6 +3,19 @@ import { KpiCard } from "@/components/KpiCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { safaricomReports } from "@/data/mockData";
 
+const mappingFields = [
+  "Serial Number",
+  "Dealer Code",
+  "Top-up Amount",
+  "Top-up Date",
+  "Region",
+  "Territory",
+  "Cluster",
+  "Fraud Flag",
+  "Agent MSISDN (Column I)",
+  "BA MSISDN (Column J)",
+];
+
 export default function SafaricomReports() {
   return (
     <div className="space-y-6">
@@ -34,6 +47,33 @@ export default function SafaricomReports() {
               <input type="date" className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
             </div>
           </div>
+
+          {/* Column Mapping */}
+          <div className="space-y-3">
+            <h4 className="text-sm font-semibold text-foreground">Column Mapping</h4>
+            <p className="text-xs text-muted-foreground">Map Safaricom report columns to system fields. Agent MSISDN and BA MSISDN are critical for BA identification and fraud detection.</p>
+            <div className="space-y-2">
+              {mappingFields.map((field) => (
+                <div key={field} className="flex items-center gap-3">
+                  <span className={`text-xs w-44 shrink-0 ${field.includes("MSISDN") ? "font-semibold text-primary" : "text-muted-foreground"}`}>{field}</span>
+                  <select className="flex-1 rounded-md border border-border bg-accent py-1.5 px-2 text-xs text-foreground">
+                    <option>Select column...</option>
+                    <option>Column A</option>
+                    <option>Column B</option>
+                    <option>Column C</option>
+                    <option>Column D</option>
+                    <option>Column E</option>
+                    <option>Column F</option>
+                    <option>Column G</option>
+                    <option>Column H</option>
+                    <option>Column I</option>
+                    <option>Column J</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <select className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground">
             <option>Use saved column mapping</option>
             <option>Default Safaricom Template</option>

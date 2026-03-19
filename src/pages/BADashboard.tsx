@@ -1,20 +1,21 @@
-import { Layers, CheckCircle, DollarSign, Bell, ScanLine } from "lucide-react";
+import { Layers, CheckCircle, DollarSign, Bell } from "lucide-react";
 import { KpiCard } from "@/components/KpiCard";
 import { StatusBadge } from "@/components/StatusBadge";
 
-const mySims = [
-  { serial: "89254000100001", status: "issued", date: "2024-03-08" },
-  { serial: "89254000100002", status: "registered", date: "2024-03-07" },
-  { serial: "89254000100003", status: "issued", date: "2024-03-06" },
-  { serial: "89254000100004", status: "returned", date: "2024-03-05" },
-  { serial: "89254000100005", status: "issued", date: "2024-03-04" },
+const myRegistrations = [
+  { serial: "89254000100001", regDate: "2024-03-08", topUp: 50, territory: "Nairobi East", cluster: "Embakasi", status: "Active", commission: 100 },
+  { serial: "89254000100002", regDate: "2024-03-07", topUp: 100, territory: "Nairobi East", cluster: "Embakasi", status: "Active", commission: 100 },
+  { serial: "89254000100003", regDate: "2024-03-06", topUp: 20, territory: "Nairobi East", cluster: "Embakasi", status: "Inactive", commission: 0 },
+  { serial: "89254000100004", regDate: "2024-03-05", topUp: 50, territory: "Nairobi West", cluster: "Westlands", status: "Active", commission: 100 },
+  { serial: "89254000100005", regDate: "2024-03-04", topUp: 0, territory: "Nairobi East", cluster: "Embakasi", status: "Not Found", commission: 0 },
+  { serial: "89254000100006", regDate: "2024-03-03", topUp: 200, territory: "Nairobi West", cluster: "Ngong Road", status: "Active", commission: 100 },
+  { serial: "89254000100007", regDate: "2024-03-02", topUp: 50, territory: "Nairobi East", cluster: "Eastleigh", status: "Active", commission: 100 },
 ];
 
-const myClaims = [
-  { serial: "89254000100002", date: "2024-03-08", status: "Approved" },
-  { serial: "89254000100006", date: "2024-03-07", status: "Pending" },
-  { serial: "89254000100009", date: "2024-03-06", status: "Rejected", reason: "Not activated by Safaricom" },
-  { serial: "89254000100010", date: "2024-03-05", status: "Approved" },
+const commissionCycles = [
+  { cycle: "March Wk 2 (Mar 8-14)", registered: 45, active: 38, rejected: 7, commission: 3800, status: "Pending" },
+  { cycle: "March Wk 1 (Mar 1-7)", registered: 50, active: 44, rejected: 6, commission: 4400, status: "Approved" },
+  { cycle: "Feb Wk 4 (Feb 22-28)", registered: 38, active: 33, rejected: 5, commission: 3300, status: "Paid" },
 ];
 
 export default function BADashboard() {
@@ -23,7 +24,7 @@ export default function BADashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-xl font-bold">Hi, John Kamau 👋</h1>
-          <p className="text-sm text-muted-foreground">Brand Ambassador</p>
+          <p className="text-sm text-muted-foreground">Brand Ambassador · 0712 345 678</p>
         </div>
         <button className="relative p-2 text-muted-foreground hover:text-foreground">
           <Bell className="h-5 w-5" />
@@ -33,68 +34,79 @@ export default function BADashboard() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3">
-        <KpiCard icon={Layers} value="120" label="SIMs Issued to Me" iconColor="text-primary" />
-        <KpiCard icon={Layers} value="95" label="SIMs Registered" iconColor="text-primary" />
-        <KpiCard icon={CheckCircle} value="82" label="Confirmed Active" iconColor="text-success" />
+        <KpiCard icon={Layers} value="120" label="SIMs Attributed to Me" iconColor="text-primary" />
+        <KpiCard icon={Layers} value="95" label="SIMs Active" iconColor="text-primary" />
+        <KpiCard icon={CheckCircle} value="82" label="Confirmed Payable" iconColor="text-success" />
         <KpiCard icon={DollarSign} value="KES 8,200" label="Commission Earned" iconColor="text-warning" />
       </div>
 
-      {/* My SIMs */}
+      {/* My Registrations - read only from Safaricom data */}
       <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-heading text-base font-semibold mb-3">SIMs Currently With Me</h3>
-        <div className="space-y-2">
-          {mySims.map((sim) => (
-            <div key={sim.serial} className="flex items-center justify-between rounded-md border border-border/50 bg-accent/30 p-3">
-              <div>
-                <p className="font-mono text-xs text-primary">{sim.serial}</p>
-                <p className="text-xs text-muted-foreground">{sim.date}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <StatusBadge status={sim.status} />
-                {sim.status === "issued" && (
-                  <button className="btn-press rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">Register</button>
-                )}
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-heading text-base font-semibold">My Registrations</h3>
+          <span className="text-xs text-muted-foreground">From Safaricom report</span>
         </div>
-        <button className="mt-3 text-sm text-primary hover:underline">View All My SIMs →</button>
+        <p className="text-xs text-muted-foreground mb-3">
+          SIMs registered via Safaricom using your phone number. This data is read-only.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                <th className="pb-2 text-left font-medium text-xs">Serial</th>
+                <th className="pb-2 text-left font-medium text-xs">Date</th>
+                <th className="pb-2 text-right font-medium text-xs">Top Up</th>
+                <th className="pb-2 text-left font-medium text-xs">Territory</th>
+                <th className="pb-2 text-left font-medium text-xs">Status</th>
+                <th className="pb-2 text-right font-medium text-xs">Commission</th>
+              </tr>
+            </thead>
+            <tbody>
+              {myRegistrations.map((r) => (
+                <tr key={r.serial} className="border-b border-border/50 hover:bg-accent/50 transition-colors">
+                  <td className="py-2.5 font-mono text-xs text-primary">{r.serial}</td>
+                  <td className="py-2.5 text-xs text-muted-foreground">{r.regDate}</td>
+                  <td className="py-2.5 text-xs text-right">KES {r.topUp}</td>
+                  <td className="py-2.5 text-xs text-muted-foreground">{r.territory}</td>
+                  <td className="py-2.5"><StatusBadge status={r.status} /></td>
+                  <td className="py-2.5 text-xs text-right font-medium text-success">{r.commission > 0 ? `KES ${r.commission}` : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button className="mt-3 text-sm text-primary hover:underline">View All Registrations →</button>
       </div>
 
-      {/* Quick Register */}
+      {/* My Commission */}
       <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-heading text-base font-semibold mb-3">Register a SIM</h3>
+        <h3 className="font-heading text-base font-semibold mb-3">My Commission</h3>
+        <p className="text-xs text-muted-foreground mb-3">Commission breakdown per reconciliation cycle</p>
         <div className="space-y-3">
-          <div className="relative">
-            <input placeholder="Scan or type serial number" className="w-full rounded-md border border-border bg-accent py-3 px-4 pr-10 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
-            <ScanLine className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
-          </div>
-          <select className="w-full rounded-md border border-border bg-accent py-2.5 px-3 text-sm text-foreground">
-            <option>New Line</option>
-            <option>Replacement</option>
-          </select>
-          <input placeholder="Customer Phone Number" className="w-full rounded-md border border-border bg-accent py-2.5 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
-          <button className="btn-press w-full rounded-md bg-primary py-3 text-sm font-semibold text-primary-foreground">Submit Registration</button>
-        </div>
-      </div>
-
-      {/* Claims */}
-      <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-heading text-base font-semibold mb-3">My Recent Claims</h3>
-        <div className="space-y-2">
-          {myClaims.map((claim) => (
-            <div key={claim.serial} className="rounded-md border border-border/50 bg-accent/30 p-3">
-              <div className="flex items-center justify-between">
-                <p className="font-mono text-xs text-primary">{claim.serial}</p>
-                <StatusBadge status={claim.status} />
+          {commissionCycles.map((c) => (
+            <div key={c.cycle} className="rounded-md border border-border/50 bg-accent/30 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium text-foreground">{c.cycle}</p>
+                <StatusBadge status={c.status} />
               </div>
-              <p className="text-xs text-muted-foreground mt-1">{claim.date}</p>
-              {claim.status === "Rejected" && (
-                <div className="mt-2 flex items-center justify-between">
-                  <p className="text-xs text-destructive">{claim.reason}</p>
-                  <button className="text-xs text-primary hover:underline">Dispute</button>
+              <div className="grid grid-cols-4 gap-2 text-xs text-muted-foreground">
+                <div>
+                  <p className="font-medium text-foreground">{c.registered}</p>
+                  <p>Registered</p>
                 </div>
-              )}
+                <div>
+                  <p className="font-medium text-success">{c.active}</p>
+                  <p>Active</p>
+                </div>
+                <div>
+                  <p className="font-medium text-destructive">{c.rejected}</p>
+                  <p>Rejected</p>
+                </div>
+                <div>
+                  <p className="font-medium text-warning">KES {c.commission.toLocaleString()}</p>
+                  <p>Commission</p>
+                </div>
+              </div>
             </div>
           ))}
         </div>

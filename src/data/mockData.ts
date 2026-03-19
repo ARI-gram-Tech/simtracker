@@ -136,7 +136,10 @@ export const commissionData = [
 export const fraudIncidents = [
   { id: 1, severity: "HIGH", type: "Duplicate Claim", description: "Same SIM claimed by two different BAs", serial: "89254000100004", ba: "Grace Achieng", time: "2 hours ago" },
   { id: 2, severity: "HIGH", type: "Safaricom Flag", description: "SIM flagged as fraudulent by Safaricom system", serial: "89254000100008", ba: "James Mutua", time: "4 hours ago" },
-  { id: 3, severity: "MEDIUM", type: "Unusual Pattern", description: "50 SIMs registered in 30 minutes — abnormal speed", serial: "Multiple", ba: "Sarah Njeri", time: "1 day ago" },
-  { id: 4, severity: "MEDIUM", type: "Wrong Dealer", description: "SIM registered under different dealer code", serial: "89254000100015", ba: "Mary Wanjiku", time: "1 day ago" },
-  { id: 5, severity: "LOW", type: "Late Registration", description: "SIM registered 30 days after issuance", serial: "89254000100022", ba: "David Mwangi", time: "3 days ago" },
+  { id: 3, severity: "HIGH", type: "Unknown BA Phone", description: "SIM registered by phone 0799999999 — not matching any BA in the system", serial: "89254000100006", ba: "Unknown (0799999999)", time: "3 hours ago" },
+  { id: 4, severity: "HIGH", type: "Agent = BA Fraud", description: "Agent MSISDN and BA MSISDN are the same number (0712345684) — one person acting as both agent and BA", serial: "89254000100008", ba: "James Mutua", time: "4 hours ago" },
+  { id: 5, severity: "MEDIUM", type: "Unusual Pattern", description: "50 SIMs registered in 30 minutes — abnormal speed", serial: "Multiple", ba: "Sarah Njeri", time: "1 day ago" },
+  { id: 6, severity: "MEDIUM", type: "Wrong Dealer", description: "SIM registered under different dealer code", serial: "89254000100015", ba: "Mary Wanjiku", time: "1 day ago" },
+  { id: 7, severity: "MEDIUM", type: "Unknown BA Phone", description: "SIM registered by phone 0788888888 — not matching any BA in the system", serial: "89254000100010", ba: "Unknown (0788888888)", time: "5 hours ago" },
+  { id: 8, severity: "LOW", type: "Late Registration", description: "SIM registered 30 days after issuance", serial: "89254000100022", ba: "David Mwangi", time: "3 days ago" },
 ];

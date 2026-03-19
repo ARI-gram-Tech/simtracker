@@ -1,10 +1,12 @@
-import { ShieldAlert, AlertTriangle, Copy, UserX } from "lucide-react";
+import { ShieldAlert, AlertTriangle, Copy, UserX, Phone, UserCheck } from "lucide-react";
 import { KpiCard } from "@/components/KpiCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { fraudIncidents, brandAmbassadors } from "@/data/mockData";
 
 export default function FraudDetection() {
   const sortedBAs = [...brandAmbassadors].sort((a, b) => b.riskScore - a.riskScore);
+  const unknownBACount = fraudIncidents.filter(i => i.type === "Unknown BA Phone").length;
+  const agentBACount = fraudIncidents.filter(i => i.type === "Agent = BA Fraud").length;
 
   return (
     <div className="space-y-6">
@@ -13,11 +15,13 @@ export default function FraudDetection() {
         <p className="text-sm text-muted-foreground">Suspicious activity flagged by the reconciliation engine</p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         <KpiCard icon={ShieldAlert} value="12" label="Fraud Flagged by Safaricom" iconColor="text-destructive" />
         <KpiCard icon={Copy} value="5" label="Duplicate Claims" iconColor="text-warning" />
         <KpiCard icon={AlertTriangle} value="3" label="Wrong Dealer SIMs" iconColor="text-warning" />
         <KpiCard icon={UserX} value="2" label="Suspicious BAs" iconColor="text-destructive" />
+        <KpiCard icon={Phone} value={String(unknownBACount)} label="Unknown BA Phone" iconColor="text-destructive" />
+        <KpiCard icon={UserCheck} value={String(agentBACount)} label="Agent = BA Fraud" iconColor="text-destructive" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">

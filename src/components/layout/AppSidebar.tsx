@@ -37,8 +37,8 @@ const opsNav: NavItem[] = [
 const baNav: NavItem[] = [
   { title: "My Dashboard", url: "/ba-dashboard", icon: LayoutDashboard },
   { title: "My SIMs", url: "/ba-dashboard", icon: Layers },
-  { title: "Register SIM", url: "/ba-dashboard", icon: PlusCircle },
-  { title: "My Claims", url: "/ba-dashboard", icon: ClipboardList },
+  { title: "My Registrations", url: "/ba-dashboard", icon: CheckSquare },
+  { title: "My Commission", url: "/ba-dashboard", icon: DollarSign },
   { title: "My Performance", url: "/ba-dashboard", icon: TrendingUp },
   { title: "Notifications", url: "/ba-dashboard", icon: Bell },
 ];
