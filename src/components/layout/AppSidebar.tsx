@@ -2,60 +2,57 @@ import { useLocation, Link } from "react-router-dom";
 import {
   LayoutDashboard, Layers, Share2, Users, FileText, GitMerge,
   DollarSign, ShieldAlert, BarChart3, Settings, Send, Building,
-  Truck, TrendingUp, Bell, CheckSquare,
-  CreditCard, Clock, Download, RefreshCw,
+  Truck, TrendingUp, Bell, CheckSquare, CreditCard, Clock,
+  Download, RefreshCw, Package, CornerDownLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { UserRole } from "@/contexts/AuthContext";
 
 type NavItem = { title: string; url: string; icon: React.ElementType };
 
-const dealerNav: NavItem[] = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "SIM Inventory", url: "/inventory", icon: Layers },
-  { title: "Distribution", url: "/issue", icon: Share2 },
-  { title: "BA Performance", url: "/ba-performance", icon: Users },
-  { title: "Safaricom Reports", url: "/reports", icon: FileText },
-  { title: "Reconciliation", url: "/reconciliation", icon: GitMerge },
-  { title: "Commission", url: "/commission", icon: DollarSign },
-  { title: "Fraud Detection", url: "/fraud", icon: ShieldAlert },
-  { title: "Analytics", url: "/analytics", icon: BarChart3 },
-  { title: "Settings", url: "/settings", icon: Settings },
-];
-
-const opsNav: NavItem[] = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "SIM Inventory", url: "/inventory", icon: Layers },
-  { title: "Issue SIMs", url: "/issue", icon: Send },
-  { title: "Branches", url: "/settings", icon: Building },
-  { title: "Vans", url: "/settings", icon: Truck },
-  { title: "Brand Ambassadors", url: "/ba-performance", icon: Users },
-  { title: "Safaricom Reports", url: "/reports", icon: FileText },
-  { title: "Reconciliation", url: "/reconciliation", icon: GitMerge },
-  { title: "Replacement SIMs", url: "/inventory", icon: RefreshCw },
-];
-
-const baNav: NavItem[] = [
-  { title: "My Dashboard", url: "/ba-dashboard", icon: LayoutDashboard },
-  { title: "My SIMs", url: "/ba-dashboard", icon: Layers },
-  { title: "My Registrations", url: "/ba-dashboard", icon: CheckSquare },
-  { title: "My Commission", url: "/ba-dashboard", icon: DollarSign },
-  { title: "My Performance", url: "/ba-dashboard", icon: TrendingUp },
-  { title: "Notifications", url: "/ba-dashboard", icon: Bell },
-];
-
-const financeNav: NavItem[] = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "Commission Reports", url: "/commission", icon: DollarSign },
-  { title: "BA Payments", url: "/commission", icon: CreditCard },
-  { title: "Payout History", url: "/commission", icon: Clock },
-  { title: "Export Reports", url: "/commission", icon: Download },
-];
-
-const roleNavMap: Record<string, NavItem[]> = {
-  dealer: dealerNav,
-  ops: opsNav,
-  ba: baNav,
-  finance: financeNav,
+const navByRole: Record<UserRole, NavItem[]> = {
+  dealer_owner: [
+    { title: "Dashboard", url: "/owner/dashboard", icon: LayoutDashboard },
+    { title: "SIM Inventory", url: "/owner/inventory", icon: Layers },
+    { title: "Distribution", url: "/owner/distribution", icon: Share2 },
+    { title: "BA Performance", url: "/owner/ba-performance", icon: Users },
+    { title: "Safaricom Reports", url: "/owner/reports", icon: FileText },
+    { title: "Reconciliation", url: "/owner/reconciliation", icon: GitMerge },
+    { title: "Commission", url: "/owner/commission", icon: DollarSign },
+    { title: "Fraud Detection", url: "/owner/fraud", icon: ShieldAlert },
+    { title: "Analytics", url: "/owner/analytics", icon: BarChart3 },
+    { title: "Settings", url: "/owner/settings", icon: Settings },
+  ],
+  operations_manager: [
+    { title: "Dashboard", url: "/operations/dashboard", icon: LayoutDashboard },
+    { title: "SIM Inventory", url: "/operations/inventory", icon: Layers },
+    { title: "Issue SIMs", url: "/operations/issue", icon: Send },
+    { title: "Return SIMs", url: "/operations/returns", icon: CornerDownLeft },
+    { title: "Branches", url: "/operations/branches", icon: Building },
+    { title: "Vans", url: "/operations/vans", icon: Truck },
+    { title: "Brand Ambassadors", url: "/operations/bas", icon: Users },
+    { title: "Safaricom Reports", url: "/operations/reports", icon: FileText },
+    { title: "Reconciliation", url: "/operations/reconciliation", icon: GitMerge },
+    { title: "Replacement SIMs", url: "/operations/replacements", icon: RefreshCw },
+    { title: "Settings", url: "/operations/settings", icon: Settings },
+  ],
+  brand_ambassador: [
+    { title: "My Dashboard", url: "/ba/dashboard", icon: LayoutDashboard },
+    { title: "My SIMs", url: "/ba/my-sims", icon: Layers },
+    { title: "My Registrations", url: "/ba/registrations", icon: CheckSquare },
+    { title: "My Commission", url: "/ba/commission", icon: DollarSign },
+    { title: "My Performance", url: "/ba/performance", icon: TrendingUp },
+    { title: "Notifications", url: "/ba/notifications", icon: Bell },
+  ],
+  finance: [
+    { title: "Dashboard", url: "/finance/dashboard", icon: LayoutDashboard },
+    { title: "Commission Reports", url: "/finance/commissions", icon: DollarSign },
+    { title: "BA Payments", url: "/finance/payments", icon: CreditCard },
+    { title: "Approve Payouts", url: "/finance/approve", icon: CheckSquare },
+    { title: "Payout History", url: "/finance/history", icon: Clock },
+    { title: "Export Reports", url: "/finance/export", icon: Download },
+    { title: "Settings", url: "/finance/settings", icon: Settings },
+  ],
 };
 
 interface AppSidebarProps {
@@ -65,7 +62,7 @@ interface AppSidebarProps {
 
 export function AppSidebar({ role, collapsed }: AppSidebarProps) {
   const location = useLocation();
-  const items = roleNavMap[role] || dealerNav;
+  const items = navByRole[role as UserRole] || navByRole.dealer_owner;
 
   return (
     <aside
@@ -74,7 +71,6 @@ export function AppSidebar({ role, collapsed }: AppSidebarProps) {
         collapsed ? "w-16" : "w-60"
       )}
     >
-      {/* Logo */}
       <div className="flex h-16 items-center gap-2 border-b border-border px-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary">
           <Layers className="h-4 w-4 text-primary-foreground" />
@@ -86,7 +82,6 @@ export function AppSidebar({ role, collapsed }: AppSidebarProps) {
         )}
       </div>
 
-      {/* Nav items */}
       <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-1">
         {items.map((item) => {
           const isActive = location.pathname === item.url;
@@ -109,7 +104,6 @@ export function AppSidebar({ role, collapsed }: AppSidebarProps) {
         })}
       </nav>
 
-      {/* Bottom */}
       {!collapsed && (
         <div className="border-t border-border p-4">
           <p className="text-xs text-muted-foreground">Enlight Communications</p>

@@ -3,17 +3,15 @@ import { Outlet } from "react-router-dom";
 import { AppSidebar } from "./AppSidebar";
 import { TopBar } from "./TopBar";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
-interface AppLayoutProps {
-  role?: string;
-}
-
-export function AppLayout({ role = "dealer" }: AppLayoutProps) {
+export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const { user } = useAuth();
 
   return (
     <div className="min-h-screen bg-background">
-      <AppSidebar role={role} collapsed={collapsed} />
+      <AppSidebar role={user?.role || "dealer_owner"} collapsed={collapsed} />
       <TopBar collapsed={collapsed} onToggleSidebar={() => setCollapsed(!collapsed)} />
       <main
         className={cn(
