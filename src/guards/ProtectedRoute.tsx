@@ -6,7 +6,12 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ requiredRole }: ProtectedRouteProps) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
+
+  // ⏳ Wait for session restore before making any redirect decision
+  if (isLoading) {
+    return null; // or a spinner if you prefer
+  }
 
   if (!isAuthenticated || !user) {
     return <Navigate to="/login" replace />;

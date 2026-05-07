@@ -4,6 +4,7 @@ import { AppSidebar } from "./AppSidebar";
 import { TopBar } from "./TopBar";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { NotificationToast } from "@/components/NotificationToast";
 
 export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
@@ -13,6 +14,7 @@ export function AppLayout() {
     <div className="min-h-screen bg-background">
       <AppSidebar role={user?.role || "dealer_owner"} collapsed={collapsed} />
       <TopBar collapsed={collapsed} onToggleSidebar={() => setCollapsed(!collapsed)} />
+      <NotificationToast />
       <main
         className={cn(
           "pt-16 transition-all duration-200 min-h-screen",
