@@ -39,6 +39,32 @@ function getFormattedDate(): string {
   });
 }
 
+function getFormattedTime(): string {
+  return new Date().toLocaleTimeString("en-KE", {
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+const DAILY_QUOTES = [
+  "Success is the sum of small efforts, repeated day in and day out.",
+  "The secret of getting ahead is getting started.",
+  "Don't watch the clock; do what it does. Keep going.",
+  "Great things never come from comfort zones.",
+  "Push yourself, because no one else is going to do it for you.",
+  "Dream it. Wish it. Do it.",
+  "Little things make big days.",
+  "Hard is not impossible — keep going.",
+  "Wake up with determination. Go to bed with satisfaction.",
+  "Do something today that your future self will thank you for.",
+];
+
+function getDailyQuote(): string {
+  const dayOfYear = Math.floor(
+    (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000
+  );
+  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+}
+
 export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu,      setShowUserMenu]       = useState(false);
@@ -81,18 +107,24 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
             {collapsed ? <Menu className="h-5 w-5" /> : <X className="h-5 w-5" />}
           </button>
 
-          {/* Greeting + date */}
+          {/* Greeting + quote */}
           <div className="hidden md:flex flex-col leading-tight">
             <span className="text-sm font-medium text-foreground">
               {getGreeting(fullName)}
             </span>
-            <span className="text-xs text-muted-foreground">
-              {getFormattedDate()}
+            <span className="text-xs text-primary/70 italic truncate max-w-md">
+              "{getDailyQuote()}"
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
+          {/* Date + time */}
+          <div className="hidden md:flex flex-col items-end leading-tight">
+            <span className="text-xs font-medium text-foreground">{getFormattedTime()}</span>
+            <span className="text-xs text-muted-foreground">{getFormattedDate()}</span>
+          </div>
+
           {/* Theme toggle */}
           <button
             onClick={toggleTheme}

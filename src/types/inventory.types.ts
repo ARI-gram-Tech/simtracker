@@ -5,6 +5,8 @@ export type SIMStatus =
   | "activated"
   | "returned"
   | "fraud_flagged"
+  | "lost"
+  | "faulty"
   | "replaced";
 
 export type MovementType =
@@ -14,7 +16,49 @@ export type MovementType =
   | "transfer"
   | "flag"
   | "replace"
-  | "register";
+  | "register"
+  | "lost"
+  | "faulty";
+
+// ── Unresolved Alert (returned by BulkIssue when BA has old issued SIMs) ──────
+
+export interface UnresolvedAlert {
+  ba_id: number;
+  ba_name: string;
+  unresolved_count: number;
+  unresolved_serials: string[];
+  issued_at: string;
+}
+
+export interface BulkIssueResponse {
+  issued: number;
+  detail: string;
+  new_status: string;
+  unresolved_alert?: UnresolvedAlert;
+}
+
+// ── Resolve request types ─────────────────────────────────────────────────────
+
+export interface ResolveLostRequest {
+  ba_id: number;
+  serial_numbers: string[];
+  loss_reason: string;
+  loss_location?: string;
+  notes?: string;
+}
+
+export interface ResolveRegisterRequest {
+  ba_id: number;
+  serial_numbers: string[];
+  notes?: string;
+}
+
+export interface ResolveFaultyRequest {
+  ba_id: number;
+  serial_numbers: string[];
+  fault_reason: string;
+  notes?: string;
+}
   
 export interface BulkRegisterRequest {
   serial_numbers: string[];

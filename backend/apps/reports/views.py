@@ -20,10 +20,38 @@ from apps.dealers.models import VanTeam
 from apps.accounts.models import User as UserModel
 
 
+# ─── Dealer Resolution Helper ─────────────────────────────────────────────────
+
+def _get_dealer_id(user):
+    """
+    Consistently resolve dealer_id for any user role.
+    Returns None for staff/admin — they see everything.
+    """
+    if user.is_staff:
+        return None
+
+    # Non-owner staff (BA, branch manager, etc.) — direct FK
+    dealer_id = getattr(user, "dealer_org_id", None)
+    if dealer_id:
+        return dealer_id
+
+    # Dealer owner — linked via OneToOne on Dealer model, not FK on User
+    try:
+        return user.dealer.id
+    except Exception:
+        return None
+
+
+# ─── Live Performance Summary ─────────────────────────────────────────────────
+
 class LivePerformanceSummaryView(APIView):
+    """
+    GET /api/reports/live-summary/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
     def _get_estimated_commission(self, registered_count: int, dealer_id) -> float:
         from apps.commissions.models import CommissionRule
-        import datetime
         try:
             today = datetime.date.today()
             rule = CommissionRule.objects.filter(
@@ -38,44 +66,43 @@ class LivePerformanceSummaryView(APIView):
                 return registered_count * float(rule.rate_per_active)
         except Exception:
             pass
-        return registered_count * 100  # fallback only if no rule exists
-
-    """
-    GET /api/reports/live-summary/
-    """
-    permission_classes = [permissions.IsAuthenticated]
+        return registered_count * 100
 
     def get(self, request):
         user = request.user
         branch_id = request.query_params.get("branch")
 
-        # Resolve dealer_id for all role types
-        dealer_id = getattr(user, "dealer_org_id", None)
-        if not dealer_id:
-            # dealer_owner is linked via OneToOne on Dealer model, not FK on User
-            try:
-                dealer_id = user.dealer.id
-            except Exception:
-                dealer_id = None
+        dealer_id = _get_dealer_id(user)
+
+        van_team_id = request.query_params.get("van_team")
+        ba_id = request.query_params.get("ba")
 
         base = SIM.objects.all()
         if dealer_id:
             base = base.filter(batch__branch__dealer_id=dealer_id)
         if branch_id:
             base = base.filter(branch_id=branch_id)
+        if van_team_id:
+            from apps.dealers.models import VanTeamMember
+            member_ids = list(VanTeamMember.objects.filter(
+                team_id=van_team_id
+            ).values_list("agent_id", flat=True))
+            base = base.filter(current_holder_id__in=member_ids)
+        if ba_id:
+            base = base.filter(current_holder_id=ba_id)
 
         in_field = base.filter(
             status__in=[SIM.Status.ISSUED, SIM.Status.REGISTERED]
         ).count()
         registered = base.filter(status=SIM.Status.REGISTERED).count()
         fraud = base.filter(status=SIM.Status.FRAUD_FLAGGED).count()
-        in_stock = base.filter(status=SIM.Status.IN_STOCK).count()
+        in_stock = base.filter(status=SIM.Status.IN_STOCK,
+                               van_team__isnull=True).count()
 
+        # Filter SafaricomReports by dealer FK directly (not branch)
         recon_qs = SafaricomReport.objects.filter(status="done")
         if dealer_id:
-            recon_qs = recon_qs.filter(
-                Q(branch__dealer_id=dealer_id) | Q(branch__isnull=True)
-            )
+            recon_qs = recon_qs.filter(branch__dealer_id=dealer_id)
         latest_report = recon_qs.order_by("-processed_at").first()
 
         confirmed = 0
@@ -94,7 +121,6 @@ class LivePerformanceSummaryView(APIView):
                 last_recon_date = latest_report.processed_at.strftime(
                     "%b %d, %Y")
 
-        # SIM counts for BAs currently holding SIMs
         ba_held_qs = (
             base.filter(
                 status__in=[SIM.Status.ISSUED, SIM.Status.REGISTERED],
@@ -107,18 +133,22 @@ class LivePerformanceSummaryView(APIView):
             )
             .annotate(sims_held=Count("id"))
         )
-        ba_held = {
-            r["current_holder"]: r for r in ba_held_qs
-        }
+        ba_held = {r["current_holder"]: r for r in ba_held_qs}
 
-        # ALL active BAs for this dealer (even if holding 0 SIMs)
         all_bas_qs = UserModel.objects.filter(
             role="brand_ambassador", is_active=True
         )
         if dealer_id:
             all_bas_qs = all_bas_qs.filter(dealer_org_id=dealer_id)
+        if van_team_id:
+            from apps.dealers.models import VanTeamMember
+            van_member_ids = list(VanTeamMember.objects.filter(
+                team_id=van_team_id
+            ).values_list("agent_id", flat=True))
+            all_bas_qs = all_bas_qs.filter(id__in=van_member_ids)
+        if ba_id:
+            all_bas_qs = all_bas_qs.filter(id=ba_id)
 
-        # registered count per BA
         ba_reg = {
             r["current_holder"]: r["cnt"]
             for r in base.filter(
@@ -201,7 +231,6 @@ class LivePerformanceSummaryView(APIView):
 
         from apps.dealers.models import VanTeam as VanTeamModel, VanTeamMember
 
-        # All active vans for this dealer
         all_vans_qs = VanTeamModel.objects.filter(
             is_active=True).select_related("branch")
         if dealer_id:
@@ -217,7 +246,6 @@ class LivePerformanceSummaryView(APIView):
             for v in all_vans_qs
         }
 
-        # Build BA -> van_team lookup via VanTeamMember
         ba_to_van = {
             m.agent_id: m.team_id
             for m in VanTeamMember.objects.filter(
@@ -225,7 +253,6 @@ class LivePerformanceSummaryView(APIView):
             ).only("agent_id", "team_id")
         }
 
-        # Aggregate BA data into vans using membership lookup
         for ba in by_ba:
             van_id = ba.get("van_team_id") or ba_to_van.get(ba["id"])
             if van_id and van_id in van_map:
@@ -246,15 +273,13 @@ class LivePerformanceSummaryView(APIView):
                 movement_type=SIMMovement.MovementType.REGISTER,
                 created_at__date=day,
             )
+            # Filter reconciliation records by dealer FK directly
             rec_qs = ReconciliationRecord.objects.filter(
                 result="payable", topup_date=day,
             )
             if dealer_id:
                 mov_qs = mov_qs.filter(sim__batch__branch__dealer_id=dealer_id)
-                rec_qs = rec_qs.filter(
-                    Q(report__branch__dealer_id=dealer_id) | Q(
-                        report__branch__isnull=True)
-                )
+                rec_qs = rec_qs.filter(report__branch__dealer_id=dealer_id)
 
             trend.append({
                 "label":      day.strftime("%a"),
@@ -289,8 +314,8 @@ class DailyPerformanceListView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        dealer_id = _get_dealer_id(self.request.user)
         qs = DailyPerformanceSnapshot.objects.all().order_by("-date")
-        dealer_id = getattr(self.request.user, "dealer_org_id", None)
         if dealer_id:
             qs = qs.filter(dealer_id=dealer_id)
         if date := self.request.query_params.get("date"):
@@ -305,20 +330,20 @@ class DailyPerformanceDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        dealer_id = getattr(self.request.user, "dealer_org_id", None)
+        dealer_id = _get_dealer_id(self.request.user)
         qs = DailyPerformanceSnapshot.objects.all()
         if dealer_id:
             qs = qs.filter(dealer_id=dealer_id)
         return qs
 
 
-# ── Aggregated summary views ──────────────────────────────────────────────────
+# ── Aggregated Summary Views ──────────────────────────────────────────────────
 
 class WeeklySummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        dealer_id = getattr(request.user, "dealer_org_id", None)
+        dealer_id = _get_dealer_id(request.user)
         qs = DailyPerformanceSnapshot.objects.all()
         if dealer_id:
             qs = qs.filter(dealer_id=dealer_id)
@@ -329,7 +354,6 @@ class WeeklySummaryView(APIView):
         week_ago = today - datetime.timedelta(days=6)
         qs = qs.filter(date__range=[week_ago, today])
 
-        from django.db.models.functions import TruncDate
         data = (
             qs.values("date")
             .annotate(
@@ -347,7 +371,7 @@ class AgentPerformanceSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        dealer_id = getattr(request.user, "dealer_org_id", None)
+        dealer_id = _get_dealer_id(request.user)
         qs = DailyPerformanceSnapshot.objects.filter(agent__isnull=False)
         if dealer_id:
             qs = qs.filter(dealer_id=dealer_id)
@@ -370,15 +394,13 @@ class AgentPerformanceSummaryView(APIView):
 class DailySnapshotByDateView(APIView):
     """
     GET /api/reports/daily-by-date/?date=2026-05-04
-    Returns live movement data for a specific date — registrations,
-    issues, returns per BA for that day.
+    Returns live movement data for a specific date.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        from apps.inventory.models import SIMMovement
         user = request.user
-        dealer_id = getattr(user, "dealer_org_id", None)
+        dealer_id = _get_dealer_id(user)
         branch_id = request.query_params.get("branch")
 
         date_str = request.query_params.get("date")
@@ -386,11 +408,16 @@ class DailySnapshotByDateView(APIView):
             try:
                 target_date = datetime.date.fromisoformat(date_str)
             except ValueError:
-                return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=400,
+                )
         else:
             target_date = datetime.date.today()
 
-        # All movements on that date
+        van_team_id = request.query_params.get("van_team")
+        ba_id = request.query_params.get("ba")
+
         mov_qs = SIMMovement.objects.filter(
             created_at__date=target_date
         ).select_related("to_user", "from_user", "sim")
@@ -399,8 +426,21 @@ class DailySnapshotByDateView(APIView):
             mov_qs = mov_qs.filter(sim__batch__branch__dealer_id=dealer_id)
         if branch_id:
             mov_qs = mov_qs.filter(sim__branch_id=branch_id)
+        if van_team_id:
+            from apps.dealers.models import VanTeamMember
+            member_ids = list(VanTeamMember.objects.filter(
+                team_id=van_team_id
+            ).values_list("agent_id", flat=True))
+            mov_qs = mov_qs.filter(
+                models.Q(to_user_id__in=member_ids) |
+                models.Q(from_user_id__in=member_ids)
+            )
+        if ba_id:
+            mov_qs = mov_qs.filter(
+                models.Q(to_user_id=ba_id) |
+                models.Q(from_user_id=ba_id)
+            )
 
-        # Group by BA
         ba_data: dict = defaultdict(lambda: {
             "name": "—", "issued": 0, "returned": 0,
             "registered": 0, "transferred": 0,
@@ -430,23 +470,18 @@ class DailySnapshotByDateView(APIView):
                     ba_data[uid]["name"] = m.to_user.full_name
                     ba_data[uid]["transferred"] += 1
 
-# Totals for the day
         total_issued = sum(v["issued"] for v in ba_data.values())
         total_returned = sum(v["returned"] for v in ba_data.values())
         total_registered = sum(v["registered"] for v in ba_data.values())
 
-        # Safaricom confirmed for that date
+        # Filter reconciliation records by dealer FK directly
         recon_qs = ReconciliationRecord.objects.filter(
             result="payable", topup_date=target_date
         )
         if dealer_id:
-            recon_qs = recon_qs.filter(
-                Q(report__branch__dealer_id=dealer_id) | Q(
-                    report__branch__isnull=True)
-            )
+            recon_qs = recon_qs.filter(report__branch__dealer_id=dealer_id)
         confirmed_today = recon_qs.count()
 
-        # Commission rate for estimated calculation
         from apps.commissions.models import CommissionRule
         commission_rate = 0.0
         try:
@@ -463,14 +498,20 @@ class DailySnapshotByDateView(APIView):
             if rule:
                 commission_rate = float(rule.rate_per_active)
         except Exception:
-            commission_rate = 100.0  # fallback
+            commission_rate = 100.0
 
-        # Merge all active BAs so even 0-activity BAs appear
-        from apps.accounts.models import User as UserModel
         all_bas = UserModel.objects.filter(
             role="brand_ambassador", is_active=True)
         if dealer_id:
             all_bas = all_bas.filter(dealer_org_id=dealer_id)
+        if van_team_id:
+            from apps.dealers.models import VanTeamMember
+            van_member_ids = list(VanTeamMember.objects.filter(
+                team_id=van_team_id
+            ).values_list("agent_id", flat=True))
+            all_bas = all_bas.filter(id__in=van_member_ids)
+        if ba_id:
+            all_bas = all_bas.filter(id=ba_id)
 
         by_ba_list = []
         for ba in all_bas:
@@ -489,11 +530,9 @@ class DailySnapshotByDateView(APIView):
                 "est_commission": round(registered * commission_rate, 2),
             })
 
-        # Sort: most activity first
         by_ba_list.sort(
             key=lambda x: x["issued"] + x["registered"], reverse=True)
 
-        # Calendar heatmap (30 days)
         today = datetime.date.today()
         calendar_data = []
         for i in range(29, -1, -1):
@@ -536,7 +575,7 @@ class AgentPerformanceView(APIView):
 
     def get(self, request):
         user = request.user
-        dealer_id = getattr(user, "dealer_org_id", None)
+        dealer_id = _get_dealer_id(user)
         branch_id = request.query_params.get("branch")
 
         base = SIM.objects.all()
@@ -544,9 +583,6 @@ class AgentPerformanceView(APIView):
             base = base.filter(batch__branch__dealer_id=dealer_id)
         if branch_id:
             base = base.filter(branch_id=branch_id)
-
-        # BAs currently holding SIMs
-        from apps.accounts.models import User as UserModel
 
         ba_held_qs = (
             base.filter(
@@ -583,7 +619,6 @@ class AgentPerformanceView(APIView):
             ).values("current_holder").annotate(cnt=Count("id"))
         }
 
-        # Last issuance date per BA
         from django.db.models import Max
         last_issuance = {
             m["to_user"]: m["last"]
@@ -593,12 +628,10 @@ class AgentPerformanceView(APIView):
             ).values("to_user").annotate(last=Max("created_at"))
         }
 
-        # Latest reconciliation
+        # Filter SafaricomReports by dealer FK directly
         recon_qs = SafaricomReport.objects.filter(status="done")
         if dealer_id:
-            recon_qs = recon_qs.filter(
-                Q(branch__dealer_id=dealer_id) | Q(branch__isnull=True)
-            )
+            recon_qs = recon_qs.filter(branch__dealer_id=dealer_id)
         latest_report = recon_qs.order_by("-processed_at").first()
 
         ba_conf = {}
@@ -619,7 +652,6 @@ class AgentPerformanceView(APIView):
                 last_recon_date = latest_report.processed_at.strftime(
                     "%b %d, %Y")
 
-        # 7-day per-BA registration trend
         today = datetime.date.today()
         trend_days = [
             today - datetime.timedelta(days=i) for i in range(6, -1, -1)]
@@ -664,7 +696,6 @@ class AgentPerformanceView(APIView):
                 "trend":               ba_trend[bid],
             })
 
-        # Aggregate 7-day trend
         agg_trend = [
             {
                 "label":      d.strftime("%a"),

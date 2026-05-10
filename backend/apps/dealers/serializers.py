@@ -1,3 +1,4 @@
+# dealers/serializers.py
 from rest_framework import serializers
 from apps.accounts.serializers import UserSerializer
 from apps.accounts.models import User

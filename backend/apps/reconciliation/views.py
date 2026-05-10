@@ -4,6 +4,7 @@ from string import ascii_uppercase
 
 from django.db import models
 from rest_framework import generics, status, permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -21,8 +22,34 @@ from apps.commissions.models import CommissionRule, CommissionCycle, CommissionR
 from apps.commissions.models import CommissionRecord as CR
 
 
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+def _get_user_dealer(user):
+    """Return the dealer for the logged-in user, or None for staff/admins."""
+    if user.is_staff:
+        return None
+    dealer = getattr(user, "dealer_org", None)
+    if not dealer:
+        try:
+            dealer = user.dealer
+        except Exception:
+            pass
+    return dealer
+
+
+def _assert_finance_or_admin(user):
+    """Only finance, dealer_owner, operations_manager, or staff may process/reset reports."""
+    allowed = {"finance", "dealer_owner", "operations_manager", "super_admin"}
+    if user.is_staff:
+        return
+    if getattr(user, "role", None) not in allowed:
+        raise PermissionDenied(
+            "You do not have permission to perform this action.")
+
+
+# ─── UTILITY FUNCTIONS ────────────────────────────────────────────────────────
+
 def col_letter_to_index(letter: str) -> int:
-    """Convert Excel column letter to 0-based index. A→0, B→1, F→5 etc."""
     letter = letter.upper().strip()
     result = 0
     for char in letter:
@@ -31,7 +58,6 @@ def col_letter_to_index(letter: str) -> int:
 
 
 def get_cell(row, col_letter: str, default=""):
-    """Safely get a cell value from a row tuple using a column letter."""
     try:
         idx = col_letter_to_index(col_letter)
         cell = row[idx]
@@ -41,13 +67,6 @@ def get_cell(row, col_letter: str, default=""):
 
 
 def normalize_msisdn(raw: str) -> str:
-    """
-    Normalize a Kenyan MSISDN to the local 9-digit form.
-    +254754765166 → 754765166
-    0754765166    → 754765166
-    254754765166  → 754765166
-    754765166     → 754765166
-    """
     n = str(raw).strip().replace(" ", "").replace("-", "")
     if n.startswith("+254"):
         return n[4:]
@@ -58,6 +77,8 @@ def normalize_msisdn(raw: str) -> str:
     return n
 
 
+# ─── SAFARICOM REPORTS ────────────────────────────────────────────────────────
+
 class SafaricomReportListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -67,47 +88,58 @@ class SafaricomReportListCreateView(generics.ListCreateAPIView):
         return SafaricomReportListSerializer
 
     def get_queryset(self):
-        return SafaricomReport.objects.all().order_by("-uploaded_at")
+        dealer = _get_user_dealer(self.request.user)
+        qs = SafaricomReport.objects.order_by("-uploaded_at")
+        if dealer:
+            qs = qs.filter(dealer=dealer)
+        return qs
 
     def perform_create(self, serializer):
+        dealer = _get_user_dealer(self.request.user)
         file_obj = self.request.FILES.get("file")
         filename = file_obj.name if file_obj else ""
 
-        # Rebuild column_mapping from individual form fields
         mapping = DEFAULT_COLUMN_MAPPING.copy()
         for key in DEFAULT_COLUMN_MAPPING:
             val = self.request.data.get(f"column_mapping_{key}")
             if val:
                 mapping[key] = val.strip().upper()
 
-        serializer.save(
-            uploaded_by=self.request.user,
-            filename=filename,
-            column_mapping=mapping,
-        )
+        kwargs = dict(uploaded_by=self.request.user,
+                      filename=filename, column_mapping=mapping)
+        if dealer:
+            kwargs["dealer"] = dealer
+        serializer.save(**kwargs)
 
 
 class SafaricomReportDetailView(generics.RetrieveAPIView):
     serializer_class = SafaricomReportSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = SafaricomReport.objects.all()
 
+    def get_queryset(self):
+        dealer = _get_user_dealer(self.request.user)
+        qs = SafaricomReport.objects.all()
+        if dealer:
+            qs = qs.filter(dealer=dealer)
+        return qs
+
+
+# ─── PROCESS REPORT ───────────────────────────────────────────────────────────
 
 class ProcessReportView(APIView):
-    """
-    POST /api/reconciliation/{id}/process/
-    Parses the uploaded Excel file, matches each row against:
-      1. SIM inventory (by serial number)
-      2. MobiGo (by ba_msisdn) to identify the BA
-    Then determines result: payable / rejected / fraud / dispute / unmatched
-    And calculates commission per record.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
+        _assert_finance_or_admin(request.user)
+
+        dealer = _get_user_dealer(request.user)
+        qs = SafaricomReport.objects.filter(
+            pk=pk, status=SafaricomReport.Status.PENDING)
+        if dealer:
+            qs = qs.filter(dealer=dealer)
+
         try:
-            report = SafaricomReport.objects.get(
-                pk=pk, status=SafaricomReport.Status.PENDING)
+            report = qs.get()
         except SafaricomReport.DoesNotExist:
             return Response(
                 {"detail": "Report not found or already processed."},
@@ -118,17 +150,13 @@ class ProcessReportView(APIView):
         report.save()
 
         try:
-            # ── Read the Excel file ───────────────────────────────────────────
             file_content = report.file.read()
-            wb = openpyxl.load_workbook(
-                io.BytesIO(file_content), read_only=True, data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(
+                file_content), read_only=True, data_only=True)
             ws = wb.active
             rows = list(ws.iter_rows())
-
-            # Skip header row
             data_rows = rows[1:] if len(rows) > 1 else []
 
-            # ── Get column mapping ────────────────────────────────────────────
             mapping = report.get_column_mapping()
             col_serial = mapping.get("serial_number", "F")
             col_ba = mapping.get("ba_msisdn",     "J")
@@ -137,15 +165,13 @@ class ProcessReportView(APIView):
             col_date = mapping.get("topup_date",    "G")
             col_fraud = mapping.get("fraud_flag",    "P")
 
-            # ── Get commission rule for this dealer ───────────────────────────
-            # Resolve dealer from the uploader
-
-            dealer = getattr(request.user, "dealer_org", None)
+            # Resolve dealer from report (not just from request user — staff support)
+            effective_dealer = dealer or report.dealer
 
             commission_rule = None
-            if dealer:
+            if effective_dealer:
                 commission_rule = CommissionRule.objects.filter(
-                    dealer=dealer,
+                    dealer=effective_dealer,
                     is_active=True,
                 ).order_by("-effective_from").first()
 
@@ -154,34 +180,29 @@ class ProcessReportView(APIView):
             rate_per_sim = float(
                 commission_rule.rate_per_active) if commission_rule else 100.0
 
-            # ── Process rows ──────────────────────────────────────────────────
             matched_count = 0
             unmatched_count = 0
             fraud_count = 0
             records = []
-
-            # Track per-BA commission for auto-creating CommissionRecords later
-            ba_commission: dict = {}  # ba_user_id → {sims: int, amount: float}
+            ba_commission: dict = {}
 
             for row in data_rows:
                 serial = str(get_cell(row, col_serial, "")).strip()
                 ba_msisdn = str(get_cell(row, col_ba,     "")).strip()
-                agent_msisdn = str(get_cell(row, col_agent, "")).strip()
+                agent_msisdn = str(get_cell(row, col_agent,  "")).strip()
                 topup_raw = get_cell(row, col_topup, 0)
                 date_raw = get_cell(row, col_date,  None)
                 fraud_raw = str(get_cell(row, col_fraud, "N")).strip().upper()
 
                 if not serial:
-                    continue  # skip empty rows
+                    continue
 
-                # Parse topup amount
                 try:
                     topup_amount = float(str(topup_raw).replace(
                         ",", "")) if topup_raw else 0.0
                 except (ValueError, TypeError):
                     topup_amount = 0.0
 
-                # Parse topup date
                 topup_date = None
                 if date_raw:
                     if hasattr(date_raw, "date"):
@@ -193,35 +214,35 @@ class ProcessReportView(APIView):
                         except Exception:
                             topup_date = None
 
-                # Is it fraud flagged by Safaricom?
                 is_fraud = fraud_raw in ("Y", "YES", "1", "TRUE")
 
-                # ── Step 1: Match SIM ─────────────────────────────────────────
+                # Match SIM — scoped to dealer's inventory
                 sim = None
                 try:
-                    sim = SIM.objects.get(serial_number=serial)
+                    sim_qs = SIM.objects.filter(serial_number=serial)
+                    if effective_dealer:
+                        sim_qs = sim_qs.filter(branch__dealer=effective_dealer)
+                    sim = sim_qs.get()
                     matched_count += 1
                 except SIM.DoesNotExist:
                     unmatched_count += 1
 
-                # ── Step 2: Identify BA from ba_msisdn via MobiGo ─────────────────
+                # Identify BA via MobiGo — scoped to dealer
                 identified_ba = None
                 if ba_msisdn:
                     normalized = normalize_msisdn(ba_msisdn)
-                    # Match against any stored format
-                    mobigo = MobiGo.objects.filter(
-                        is_active=True,
-                    ).filter(
+                    mobigo_qs = MobiGo.objects.filter(is_active=True).filter(
                         models.Q(ba_msisdn=normalized) |
                         models.Q(ba_msisdn=f"+254{normalized}") |
                         models.Q(ba_msisdn=f"254{normalized}") |
                         models.Q(ba_msisdn=f"0{normalized}")
-                    ).select_related("assigned_ba").first()
-
+                    ).select_related("assigned_ba")
+                    if effective_dealer:
+                        mobigo_qs = mobigo_qs.filter(dealer=effective_dealer)
+                    mobigo = mobigo_qs.first()
                     if mobigo and mobigo.assigned_ba:
                         identified_ba = mobigo.assigned_ba
 
-                # ── Step 3: Determine result ──────────────────────────────────
                 result = ReconciliationRecord.Result.UNMATCHED
                 rejection_reason = ""
                 commission_amount = 0.0
@@ -243,10 +264,7 @@ class ProcessReportView(APIView):
                             created_by=request.user,
                         )
 
-                        # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────
                         from apps.notifications.models import Notification
-
-                        # Notify the BA who holds this SIM
                         if sim.current_holder:
                             Notification.objects.create(
                                 recipient=sim.current_holder,
@@ -261,17 +279,15 @@ class ProcessReportView(APIView):
                                 type=Notification.Type.ALERT,
                             )
 
-                        # Notify finance/management
                         from apps.accounts.models import User as UserModel
-                        dealer = sim.branch.dealer if sim.branch else None
-                        if dealer:
-                            finance_recipients = UserModel.objects.filter(
+                        fraud_dealer = sim.branch.dealer if sim.branch else effective_dealer
+                        if fraud_dealer:
+                            for recipient in UserModel.objects.filter(
                                 role__in=["finance", "dealer_owner",
                                           "operations_manager"],
-                                dealer_org=dealer,
+                                dealer_org=fraud_dealer,
                                 is_active=True,
-                            )
-                            for recipient in finance_recipients:
+                            ):
                                 Notification.objects.create(
                                     recipient=recipient,
                                     title="🚨 Fraud Alert - Action Required",
@@ -284,7 +300,6 @@ class ProcessReportView(APIView):
                                     ),
                                     type=Notification.Type.ALERT,
                                 )
-                        # ───────────────────────────────────────────────────────────────────────
 
                 elif sim is None:
                     if identified_ba is not None:
@@ -295,38 +310,32 @@ class ProcessReportView(APIView):
                             f"{identified_ba.last_name} but SIM was never issued through SimTrack"
                         )
 
-                        # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────
                         from apps.notifications.models import Notification
+                        from apps.accounts.models import User as UserModel
 
-                        # Notify the BA
-                        if identified_ba:
-                            Notification.objects.create(
-                                recipient=identified_ba,
-                                title="⚠️ Ghost SIM Detected",
-                                message=(
-                                    f"A SIM with serial number {serial} was found in the Safaricom report "
-                                    f"associated with your MSISDN ({ba_msisdn}), but this SIM was NEVER "
-                                    f"issued to you through SimTrack.\n\n"
-                                    f"Report period: {report.period_start} to {report.period_end}\n"
-                                    f"Topup amount: KES {topup_amount}\n\n"
-                                    f"This is a SERIOUS compliance issue. Please contact your manager immediately."
-                                ),
-                                type=Notification.Type.ALERT,
-                            )
+                        Notification.objects.create(
+                            recipient=identified_ba,
+                            title="⚠️ Ghost SIM Detected",
+                            message=(
+                                f"A SIM with serial number {serial} was found in the Safaricom report "
+                                f"associated with your MSISDN ({ba_msisdn}), but this SIM was NEVER "
+                                f"issued to you through SimTrack.\n\n"
+                                f"Report period: {report.period_start} to {report.period_end}\n"
+                                f"Topup amount: KES {topup_amount}\n\n"
+                                f"This is a SERIOUS compliance issue. Please contact your manager immediately."
+                            ),
+                            type=Notification.Type.ALERT,
+                        )
 
-                        # Notify finance/management
-                        dealer = None
-                        if identified_ba:
-                            dealer = identified_ba.dealer_org
-
-                        if dealer:
-                            finance_recipients = UserModel.objects.filter(
+                        ghost_dealer = getattr(
+                            identified_ba, "dealer_org", None) or effective_dealer
+                        if ghost_dealer:
+                            for recipient in UserModel.objects.filter(
                                 role__in=["finance", "dealer_owner",
                                           "operations_manager"],
-                                dealer_org=dealer,
+                                dealer_org=ghost_dealer,
                                 is_active=True,
-                            )
-                            for recipient in finance_recipients:
+                            ):
                                 Notification.objects.create(
                                     recipient=recipient,
                                     title="🚨 Ghost SIM Alert - Compliance Issue",
@@ -341,7 +350,6 @@ class ProcessReportView(APIView):
                                     ),
                                     type=Notification.Type.ALERT,
                                 )
-                        # ───────────────────────────────────────────────────────────────────────
                     else:
                         result = ReconciliationRecord.Result.UNMATCHED
                         rejection_reason = "Serial not found in inventory"
@@ -357,10 +365,9 @@ class ProcessReportView(APIView):
                         f"but Safaricom reports BA {identified_ba.id}"
                     )
 
-                    # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────────
                     from apps.notifications.models import Notification
+                    from apps.accounts.models import User as UserModel
 
-                    # Notify the BA who holds the SIM
                     if sim.current_holder:
                         Notification.objects.create(
                             recipient=sim.current_holder,
@@ -375,7 +382,6 @@ class ProcessReportView(APIView):
                             type=Notification.Type.ALERT,
                         )
 
-                    # Notify the identified BA (if different from current holder)
                     if identified_ba and identified_ba.id != sim.current_holder_id:
                         Notification.objects.create(
                             recipient=identified_ba,
@@ -383,22 +389,21 @@ class ProcessReportView(APIView):
                             message=(
                                 f"A dispute has been recorded for SIM {serial}.\n\n"
                                 f"Safaricom reports this SIM belongs to you (MSISDN {ba_msisdn}), "
-                                f"but our records show it is held by {sim.current_holder.full_name if sim.current_holder else 'another user'}.\n\n"
+                                f"but our records show it is held by "
+                                f"{sim.current_holder.full_name if sim.current_holder else 'another user'}.\n\n"
                                 f"Report period: {report.period_start} to {report.period_end}\n\n"
                                 f"Please contact your manager to resolve this discrepancy."
                             ),
                             type=Notification.Type.ALERT,
                         )
 
-                    # Notify managers
-                    dealer = sim.branch.dealer if sim.branch else None
-                    if dealer:
-                        managers = UserModel.objects.filter(
+                    dispute_dealer = sim.branch.dealer if sim.branch else effective_dealer
+                    if dispute_dealer:
+                        for manager in UserModel.objects.filter(
                             role__in=["operations_manager", "dealer_owner"],
-                            dealer_org=dealer,
+                            dealer_org=dispute_dealer,
                             is_active=True,
-                        )
-                        for manager in managers:
+                        ):
                             Notification.objects.create(
                                 recipient=manager,
                                 title="⚠️ Dispute Requires Resolution",
@@ -411,23 +416,19 @@ class ProcessReportView(APIView):
                                 ),
                                 type=Notification.Type.ALERT,
                             )
-                    # ───────────────────────────────────────────────────────────────────────────
+
                 elif topup_amount < min_topup:
                     result = ReconciliationRecord.Result.REJECTED
-                    rejection_reason = (
-                        f"Topup KES {topup_amount} below minimum KES {min_topup}"
-                    )
+                    rejection_reason = f"Topup KES {topup_amount} below minimum KES {min_topup}"
                     sim_status = ReconciliationRecord.SimStatus.INACTIVE
 
                 else:
-                    # All checks pass — payable
                     result = ReconciliationRecord.Result.PAYABLE
                     commission_amount = rate_per_sim
                     sim_status = ReconciliationRecord.SimStatus.ACTIVE
 
-                    # Mark SIM as registered
                     if sim:
-                        sim.status = SIM.Status.ACTIVATED   # ← was REGISTERED
+                        sim.status = SIM.Status.ACTIVATED
                         sim.save()
                         SIMMovement.objects.create(
                             sim=sim,
@@ -438,16 +439,28 @@ class ProcessReportView(APIView):
                             created_by=request.user,
                         )
 
-                    # Accumulate BA commission
                     if identified_ba:
                         if identified_ba.id not in ba_commission:
                             ba_commission[identified_ba.id] = {
-                                "user": identified_ba,
-                                "sims": 0,
-                                "amount": 0.0,
+                                "user": identified_ba, "sims": 0, "amount": 0.0,
                             }
                         ba_commission[identified_ba.id]["sims"] += 1
                         ba_commission[identified_ba.id]["amount"] += commission_amount
+
+                        from apps.notifications.models import Notification
+                        Notification.objects.create(
+                            recipient=identified_ba,
+                            title="✅ SIM Confirmed Active — Commission Earned",
+                            message=(
+                                f"Great news! SIM {serial} has been confirmed active "
+                                f"by Safaricom.\n\n"
+                                f"Topup: KES {topup_amount}\n"
+                                f"Commission: KES {commission_amount}\n"
+                                f"Period: {report.period_start} to {report.period_end}\n\n"
+                                f"This SIM will be included in your next commission payout."
+                            ),
+                            type=Notification.Type.FINANCE,
+                        )
 
                 records.append(ReconciliationRecord(
                     report=report,
@@ -467,13 +480,12 @@ class ProcessReportView(APIView):
                     commission_amount=commission_amount,
                 ))
 
-            # ── Bulk create records ───────────────────────────────────────────
             ReconciliationRecord.objects.bulk_create(records)
 
-            # ── Auto-create CommissionRecords per BA ──────────────────────────
-            if commission_rule and dealer and ba_commission:
+            # Auto-create CommissionRecords per BA
+            if commission_rule and effective_dealer and ba_commission:
                 cycle = CommissionCycle.objects.filter(
-                    dealer=dealer,
+                    dealer=effective_dealer,
                     status=CommissionCycle.Status.OPEN,
                 ).first()
 
@@ -483,16 +495,13 @@ class ProcessReportView(APIView):
                     for ba_id, data in ba_commission.items():
                         ba_user = data["user"]
 
-                        # Claimed: SIMs this BA has registered in the system
                         claimed = SIMModel.objects.filter(
                             current_holder=ba_user,
                             status=SIMModel.Status.REGISTERED,
                         ).count()
 
-                        # From reconciliation records for this BA in this report
                         ba_recon = ReconciliationRecord.objects.filter(
-                            report=report,
-                            identified_ba=ba_user,
+                            report=report, identified_ba=ba_user,
                         )
                         payable_count = ba_recon.filter(
                             result=ReconciliationRecord.Result.PAYABLE).count()
@@ -502,34 +511,22 @@ class ProcessReportView(APIView):
                             result=ReconciliationRecord.Result.REJECTED).count()
                         disputed_count = ba_recon.filter(
                             result=ReconciliationRecord.Result.DISPUTE).count()
-
-                        # Not in inventory: rows where sim=None for this BA
                         not_in_inv = ReconciliationRecord.objects.filter(
-                            report=report,
-                            identified_ba=ba_user,
-                            sim__isnull=True,
+                            report=report, identified_ba=ba_user, sim__isnull=True,
                         ).exclude(result=ReconciliationRecord.Result.GHOST_SIM).count()
-                        # Ghost SIMs specifically — not in inventory but BA was identified
-                        ghost_count = ba_recon.filter(
-                            result=ReconciliationRecord.Result.GHOST_SIM).count()
 
-                        # Not in report: claimed but Safaricom didn't confirm
                         not_in_report = max(0, claimed - payable_count)
-
-                        # Gross = payable SIMs × rate
                         gross = payable_count * rate_per_sim
-                        # Deductions = not_in_report × rate (they don't get paid for unclaimed)
                         deductions = not_in_report * rate_per_sim
-                        net = gross  # deductions are informational only for now
+                        net = gross
 
                         existing = CommissionRecord.objects.filter(
                             cycle=cycle, agent_id=ba_id).first()
-
                         if existing:
                             existing.claimed_sims += claimed
                             existing.active_sims += payable_count
                             existing.not_in_report_sims += not_in_report
-                            existing.not_in_inventory_sims += not_in_inv  # includes ghost_count
+                            existing.not_in_inventory_sims += not_in_inv
                             existing.fraud_sims += fraud_count_ba
                             existing.rejected_sims += rejected_count
                             existing.disputed_sims += disputed_count
@@ -547,7 +544,7 @@ class ProcessReportView(APIView):
                                 claimed_sims=claimed,
                                 active_sims=payable_count,
                                 not_in_report_sims=not_in_report,
-                                not_in_inventory_sims=not_in_inv,  # includes ghost_count
+                                not_in_inventory_sims=not_in_inv,
                                 fraud_sims=fraud_count_ba,
                                 rejected_sims=rejected_count,
                                 disputed_sims=disputed_count,
@@ -557,7 +554,6 @@ class ProcessReportView(APIView):
                                 net_amount=net,
                             )
 
-            # ── Update report stats ───────────────────────────────────────────
             report.status = SafaricomReport.Status.DONE
             report.total_records = len(records)
             report.matched = matched_count
@@ -583,11 +579,22 @@ class ProcessReportView(APIView):
             )
 
 
+# ─── RECONCILIATION RECORDS ───────────────────────────────────────────────────
+
 class ReconciliationRecordListView(generics.ListAPIView):
     serializer_class = ReconciliationRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        dealer = _get_user_dealer(self.request.user)
+
+        # Verify the report belongs to this dealer before returning its records
+        report_qs = SafaricomReport.objects.filter(pk=self.kwargs["pk"])
+        if dealer:
+            report_qs = report_qs.filter(dealer=dealer)
+        if not report_qs.exists():
+            return ReconciliationRecord.objects.none()
+
         qs = ReconciliationRecord.objects.filter(
             report_id=self.kwargs["pk"]
         ).select_related("identified_ba", "sim")
@@ -606,15 +613,24 @@ class ReconciliationRecordListView(generics.ListAPIView):
         return qs.order_by("-created_at")
 
 
+# ─── RESET REPORT ─────────────────────────────────────────────────────────────
+
 class ResetReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        from apps.accounts.models import User  # ← ADD THIS IMPORT
-        from apps.notifications.models import Notification  # ← ADD THIS IMPORT
+        _assert_finance_or_admin(request.user)
+
+        from apps.accounts.models import User
+        from apps.notifications.models import Notification
+
+        dealer = _get_user_dealer(request.user)
+        qs = SafaricomReport.objects.filter(pk=pk)
+        if dealer:
+            qs = qs.filter(dealer=dealer)
 
         try:
-            report = SafaricomReport.objects.get(pk=pk)
+            report = qs.get()
         except SafaricomReport.DoesNotExist:
             return Response({"detail": "Report not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -624,23 +640,19 @@ class ResetReportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Delete commission records linked to this report's BAs
         ba_ids = list(report.records.values_list(
             "identified_ba", flat=True).distinct())
-        dealer = getattr(request.user, "dealer_org", None)
-        if ba_ids and dealer:
+        effective_dealer = dealer or report.dealer
+        if ba_ids and effective_dealer:
             cycle = CommissionCycle.objects.filter(
-                dealer=dealer,
+                dealer=effective_dealer,
                 status=CommissionCycle.Status.OPEN,
             ).first()
             if cycle:
                 CR.objects.filter(
-                    cycle=cycle,
-                    agent_id__in=ba_ids,
-                    status="pending",
+                    cycle=cycle, agent_id__in=ba_ids, status="pending",
                 ).delete()
 
-        # Delete existing records and reset stats
         report.records.all().delete()
         report.status = SafaricomReport.Status.PENDING
         report.total_records = 0
@@ -650,16 +662,12 @@ class ResetReportView(APIView):
         report.processed_at = None
         report.save()
 
-        # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────
-        # Notify ops managers and dealer owner
-        if dealer:
-            recipients = User.objects.filter(
+        if effective_dealer:
+            for recipient in User.objects.filter(
                 role__in=["operations_manager", "dealer_owner"],
-                dealer_org=dealer,
+                dealer_org=effective_dealer,
                 is_active=True,
-            )
-
-            for recipient in recipients:
+            ):
                 Notification.objects.create(
                     recipient=recipient,
                     title="🔄 Report Reset",
@@ -668,61 +676,60 @@ class ResetReportView(APIView):
                         f"Report ID: {report.id}\n"
                         f"Period: {report.period_start} to {report.period_end}\n"
                         f"Reset by: {request.user.full_name}\n"
-                        f"Files uploaded: {report.filename}\n\n"
+                        f"File: {report.filename}\n\n"
                         f"All associated reconciliation records and pending commissions "
                         f"have been deleted. The report can now be reprocessed."
                     ),
                     type=Notification.Type.ALERT,
                 )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response({"detail": "Report reset to pending."}, status=status.HTTP_200_OK)
 
-# ── Fraud Summary View ────────────────────────────────────────────────────────
 
+# ─── FRAUD SUMMARY ────────────────────────────────────────────────────────────
 
 class FraudSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         from django.db.models import Count, Sum, Q
-        from apps.inventory.models import SIM
 
-        # ── KPIs ──────────────────────────────────────────────────────────────
-        fraud_flagged_safaricom = ReconciliationRecord.objects.filter(
+        dealer = _get_user_dealer(request.user)
+        base_qs = ReconciliationRecord.objects.all()
+        if dealer:
+            base_qs = base_qs.filter(report__dealer=dealer)
+
+        fraud_flagged_safaricom = base_qs.filter(
             result=ReconciliationRecord.Result.FRAUD
         ).count()
 
-        unknown_ba = ReconciliationRecord.objects.filter(
+        unknown_ba = base_qs.filter(
             result=ReconciliationRecord.Result.UNMATCHED,
             identified_ba__isnull=True,
             sim__isnull=False,
         ).count()
 
-        wrong_dealer = ReconciliationRecord.objects.filter(
+        wrong_dealer = base_qs.filter(
             result=ReconciliationRecord.Result.UNMATCHED,
             sim__isnull=True,
         ).count()
 
-        disputed = ReconciliationRecord.objects.filter(
+        disputed = base_qs.filter(
             result=ReconciliationRecord.Result.DISPUTE
         ).count()
 
-        agent_eq_ba = ReconciliationRecord.objects.filter(
+        agent_eq_ba = base_qs.filter(
             result=ReconciliationRecord.Result.FRAUD,
             agent_msisdn=models.F("ba_msisdn"),
         ).count()
 
-        # ── Flagged Incidents ─────────────────────────────────────────────────
-        fraud_records = ReconciliationRecord.objects.filter(
+        fraud_records = base_qs.filter(
             result__in=[
                 ReconciliationRecord.Result.FRAUD,
                 ReconciliationRecord.Result.DISPUTE,
                 ReconciliationRecord.Result.UNMATCHED,
             ]
-        ).select_related(
-            "report", "identified_ba", "sim__current_holder"
-        ).order_by("-created_at")[:50]
+        ).select_related("report", "identified_ba", "sim__current_holder").order_by("-created_at")[:50]
 
         incidents = []
         for r in fraud_records:
@@ -731,8 +738,7 @@ class FraudSummaryView(APIView):
                 severity = "critical"
                 description = (
                     f"SIM {r.serial_number} was flagged as fraudulent. "
-                    f"BA MSISDN: {r.ba_msisdn or '—'}. "
-                    f"Topup: KES {r.topup_amount}."
+                    f"BA MSISDN: {r.ba_msisdn or '—'}. Topup: KES {r.topup_amount}."
                 )
             elif r.result == ReconciliationRecord.Result.DISPUTE:
                 incident_type = "MSISDN Mismatch — Disputed"
@@ -759,27 +765,22 @@ class FraudSummaryView(APIView):
                 )
 
             incidents.append({
-                "id": r.id,
-                "type": incident_type,
-                "severity": severity,
-                "description": description,
+                "id":           r.id,
+                "type":         incident_type,
+                "severity":     severity,
+                "description":  description,
                 "serial_number": r.serial_number,
-                "ba_msisdn": r.ba_msisdn,
-                "ba_name": r.identified_ba.full_name if r.identified_ba else None,
+                "ba_msisdn":    r.ba_msisdn,
+                "ba_name":      r.identified_ba.full_name if r.identified_ba else None,
                 "report_period": r.report.period_start.isoformat() if r.report.period_start else None,
                 "topup_amount": str(r.topup_amount),
-                "result": r.result,
-                "created_at": r.created_at.isoformat(),
+                "result":       r.result,
+                "created_at":   r.created_at.isoformat(),
             })
 
-# ── BA Risk Scores ────────────────────────────────────────────────────
         ba_stats = (
-            ReconciliationRecord.objects.filter(identified_ba__isnull=False)
-            .values(
-                "identified_ba",
-                "identified_ba__first_name",
-                "identified_ba__last_name",
-            )
+            base_qs.filter(identified_ba__isnull=False)
+            .values("identified_ba", "identified_ba__first_name", "identified_ba__last_name")
             .annotate(
                 total=Count("id"),
                 fraud_count=Count("id", filter=Q(
@@ -796,9 +797,9 @@ class FraudSummaryView(APIView):
             total = ba["total"] or 1
             score = min(
                 round(
-                    (ba["fraud_count"] * 50 +
-                     ba["dispute_count"] * 25 +
-                     ba["rejected_count"] * 10) / total * 100
+                    (ba["fraud_count"] * 50 + ba["dispute_count"]
+                     * 25 + ba["rejected_count"] * 10)
+                    / total * 100
                 ),
                 100,
             )
@@ -807,12 +808,12 @@ class FraudSummaryView(APIView):
             full_name = f"{ba['identified_ba__first_name']} {ba['identified_ba__last_name']}".strip(
             )
             ba_risk.append({
-                "ba_id": ba["identified_ba"],
-                "full_name": full_name,
-                "risk_score": score,
-                "total_sims": ba["total"],
-                "fraud_count": ba["fraud_count"],
-                "dispute_count": ba["dispute_count"],
+                "ba_id":          ba["identified_ba"],
+                "full_name":      full_name,
+                "risk_score":     score,
+                "total_sims":     ba["total"],
+                "fraud_count":    ba["fraud_count"],
+                "dispute_count":  ba["dispute_count"],
                 "rejected_count": ba["rejected_count"],
             })
 
@@ -821,21 +822,23 @@ class FraudSummaryView(APIView):
         return Response({
             "kpis": {
                 "fraud_flagged_safaricom": fraud_flagged_safaricom,
-                "unknown_ba": unknown_ba,
-                "wrong_dealer_sims": wrong_dealer,
-                "disputed": disputed,
-                "agent_eq_ba": agent_eq_ba,
+                "unknown_ba":             unknown_ba,
+                "wrong_dealer_sims":      wrong_dealer,
+                "disputed":               disputed,
+                "agent_eq_ba":            agent_eq_ba,
             },
             "incidents": incidents,
-            "ba_risk": ba_risk,
+            "ba_risk":   ba_risk,
         })
 
+
+# ─── MY RECONCILIATION HISTORY (BA self-view) ─────────────────────────────────
 
 class MyReconciliationHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        from apps.inventory.models import SIM
+        # This is a self-view — always scoped to the requesting user
         records = ReconciliationRecord.objects.filter(
             identified_ba=request.user
         ).select_related("report", "sim").order_by("-report__period_end", "-created_at")
@@ -859,11 +862,15 @@ class MyReconciliationHistoryView(APIView):
         return Response(data)
 
 
+# ─── RAISE COMPLAINT ──────────────────────────────────────────────────────────
+
 class RaiseComplaintView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        from apps.accounts.models import User, Notification
+        from apps.accounts.models import User
+        from apps.notifications.models import Notification
+
         serial = request.data.get("serial_number")
         record_id = request.data.get("record_id")
         message = request.data.get("message", "").strip()
@@ -871,25 +878,34 @@ class RaiseComplaintView(APIView):
         if not serial or not record_id:
             return Response({"error": "serial_number and record_id required"}, status=400)
 
-        ba_name = f"{request.user.first_name} {request.user.last_name}".strip(
-        ) or request.user.email
+        # Verify the record belongs to the requesting user
+        try:
+            record = ReconciliationRecord.objects.get(
+                pk=record_id, identified_ba=request.user)
+        except ReconciliationRecord.DoesNotExist:
+            return Response({"error": "Record not found or does not belong to you."}, status=404)
 
-        recipients = User.objects.filter(
-            role__in=["branch_manager", "operations_manager"],
-            dealer=request.user.dealer,
-            is_active=True,
-        )
+        dealer = _get_user_dealer(request.user)
+        ba_name = request.user.full_name or request.user.email
 
         note_title = f"Complaint: SIM {serial}"
         note_message = message or f"{ba_name} raised a complaint about SIM {serial} (Record #{record_id})"
 
+        if dealer:
+            recipients = User.objects.filter(
+                role__in=["branch_manager", "operations_manager"],
+                dealer_org=dealer,
+                is_active=True,
+            )
+        else:
+            recipients = User.objects.none()
+
         for recipient in recipients:
             Notification.objects.create(
-                user=recipient,
+                recipient=recipient,
                 title=note_title,
                 message=note_message,
-                notification_type="complaint",
-                related_object_id=record_id,
+                type=Notification.Type.ALERT,
             )
 
         return Response({"detail": f"Complaint raised for {serial}. Managers notified."})

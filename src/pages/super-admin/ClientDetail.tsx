@@ -323,7 +323,7 @@ export default function ClientDetail() {
 
         {/* ── Users ── */}
         {activeTab === "users" && (
-          <UsersPage />
+          <UsersPage dealerId={Number(id)} />
         )}
 
         {/* ── Billing ── */}

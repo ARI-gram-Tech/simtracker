@@ -41,6 +41,9 @@ export const ENDPOINTS = {
   BULK_RETURN:       `${BASE_URL}/inventory/actions/bulk-return/`,
   BULK_REGISTER:     `${BASE_URL}/inventory/actions/bulk-register/`,
   BULK_DELETE:       `${BASE_URL}/inventory/actions/bulk-delete/`,
+  RESOLVE_LOST:      `${BASE_URL}/inventory/actions/resolve-lost/`,
+  RESOLVE_REGISTER:  `${BASE_URL}/inventory/actions/resolve-register/`,
+  RESOLVE_FAULTY:    `${BASE_URL}/inventory/actions/resolve-faulty/`,
   SIM_MOVEMENTS_ALL: `${BASE_URL}/inventory/movements/`,
 
   // ── Reconciliation ──────────────────────────────────────────────────────────
@@ -63,7 +66,8 @@ export const ENDPOINTS = {
   PAYOUTS:                `${BASE_URL}/commissions/payouts/`,
   DEDUCTION_RULES:        `${BASE_URL}/commissions/deduction-rules/`,
   DEDUCTION_RULE:         (id: number) => `${BASE_URL}/commissions/deduction-rules/${id}/`,
-
+  BA_SIM_BREAKDOWN:       `${BASE_URL}/commissions/ba-sim-breakdown/`,
+  
   // ── Notifications ───────────────────────────────────────────────────────────
   NOTIFICATIONS:  `${BASE_URL}/notifications/`,
   MARK_READ:      (id: number) => `${BASE_URL}/notifications/${id}/mark-read/`,

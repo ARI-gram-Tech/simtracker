@@ -3,13 +3,19 @@ import { useState, useMemo } from "react";
 import {
   Building, Truck, User, Store, Plus, X, Loader2,
   AlertCircle, PackageSearch, Check, Filter, ChevronLeft, ChevronRight,
-  ShieldAlert, Search,
+  ShieldAlert, Search, AlertTriangle, CheckCircle2, Skull, Wrench, RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useBranches, useAllVanTeams } from "@/hooks/useDealers";
 import { useUsers } from "@/hooks/useUsers";
-import { useBulkIssueSIMs, useSIMs, useAllSIMMovements } from "@/hooks/useInventory";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  useBulkIssueSIMs, useSIMs, useAllSIMMovements,
+  useResolveRegister, useResolveLost, useResolveFaulty,
+} from "@/hooks/useInventory";
+import { useNavigate } from "react-router-dom";
+import type { UnresolvedAlert } from "@/types/inventory.types";
 import { showSuccess, showError } from "@/lib/toast";
 import type { Branch, VanTeam } from "@/types/dealers.types";
 import type { UserProfile } from "@/types/auth.types";
@@ -85,24 +91,34 @@ const PICKER_PAGE_SIZE = 20;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function calcCount(start: string, end: string): number | null {
-  const s = parseInt(start), e = parseInt(end);
-  if (isNaN(s) || isNaN(e) || e < s) return null;
-  return e - s + 1;
+    try {
+        const s = BigInt(start), e = BigInt(end);
+        if (e < s) return null;
+        return Number(e - s + 1n);
+    } catch {
+        return null;
+    }
 }
 
 function buildSerialRange(start: string, end: string): string[] {
-  const s = parseInt(start), e = parseInt(end);
-  const serials: string[] = [];
-  const padLen = Math.max(start.length, end.length);
-  for (let i = s; i <= e; i++) serials.push(String(i).padStart(padLen, "0"));
-  return serials;
+    try {
+        const s = BigInt(start), e = BigInt(end);
+        const serials: string[] = [];
+        const padLen = Math.max(start.length, end.length);
+        for (let i = s; i <= e; i++) {
+            serials.push(String(i).padStart(padLen, "0"));
+        }
+        return serials;
+    } catch {
+        return [];
+    }
 }
 
 // ─── Stock Picker Panel ───────────────────────────────────────────────────────
 
 function StockPickerPanel({
   onClose, simTab, serialList, onAddSerial, onRemoveSerial, onSelectRange,
-  branches, scopeParams,
+  branches, scopeParams, defaultBranchId,
 }: {
   onClose: () => void;
   simTab: "single" | "range";
@@ -112,8 +128,12 @@ function StockPickerPanel({
   onSelectRange: (start: string, end: string) => void;
   branches: Branch[];
   scopeParams: Record<string, string | number>;
+  defaultBranchId?: number;
 }) {
-  const [branchFilter,  setBranchFilter]  = useState("");
+  const warehouseBranch = branches.find(b => b.is_warehouse);
+  const [branchFilter, setBranchFilter] = useState(
+      defaultBranchId ? String(defaultBranchId) : warehouseBranch ? String(warehouseBranch.id) : ""
+  );
   const [searchFilter,  setSearchFilter]  = useState("");
   const [rangeSelected, setRangeSelected] = useState<string[]>([]);
   const [page,          setPage]          = useState(1);
@@ -188,6 +208,12 @@ function StockPickerPanel({
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-3">
+          {defaultBranchId && branchFilter && String(defaultBranchId) !== branchFilter && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 mb-2 text-xs text-amber-500">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              You're picking stock from a different branch than your destination. This may cause misallocation.
+            </div>
+          )}
           {isLoading ? (
             <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -283,6 +309,38 @@ function StockPickerPanel({
   );
 }
 
+function LogRow({ row }: { row: { name: string; count: number; by: string; serials: string[] } }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="rounded-lg border border-border bg-background overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-sm font-medium text-foreground truncate">{row.name}</span>
+          <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">
+            {row.count} SIM{row.count !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 ml-3">
+          <span className="text-xs text-muted-foreground hidden sm:block">by {row.by}</span>
+          <button
+            onClick={() => setExpanded(p => !p)}
+            className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            {expanded ? "Hide" : "More"}
+            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-90")} />
+          </button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="border-t border-border bg-accent/30 px-4 py-3 flex flex-wrap gap-1.5">
+          {row.serials.map(s => (
+            <span key={s} className="font-mono text-xs text-primary bg-primary/10 rounded px-2 py-0.5">{s}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function IssueSims() {
@@ -319,8 +377,9 @@ export default function IssueSims() {
   const [notes,          setNotes]          = useState("");
   const [showPicker,     setShowPicker]     = useState(false);
   const [showConfirm,    setShowConfirm]    = useState(false);
-  const [logSearch, setLogSearch] = useState("");
-  const [logDate,   setLogDate]   = useState<string>(new Date().toISOString().split("T")[0]);
+  const [logSearch,  setLogSearch]  = useState("");
+  const [logDate,    setLogDate]    = useState<string>(new Date().toISOString().split("T")[0]);
+  const [logBranch,  setLogBranch]  = useState<string>("");
 
   const { data: branchesData, isLoading: branchesLoading } = useBranches(dealerId);
   const branches = useMemo<Branch[]>(() => branchesData ?? [], [branchesData]);
@@ -341,22 +400,37 @@ export default function IssueSims() {
   );
   const externalAgents = useMemo<UserProfile[]>(() => agentData?.results ?? [], [agentData]);
 
-  const bulkIssue = useBulkIssueSIMs();
+  const bulkIssue       = useBulkIssueSIMs();
+  const resolveRegister = useResolveRegister();
+  const resolveLost     = useResolveLost();
+  const resolveFaulty   = useResolveFaulty();
+  const queryClient     = useQueryClient();
+  const navigate        = useNavigate();
+
+  const [unresolvedAlert,    setUnresolvedAlert]    = useState<UnresolvedAlert | null>(null);
+  const [resolveMode,        setResolveMode]        = useState<"register" | "lost" | "faulty" | null>(null);
+  const [selectedSerials,    setSelectedSerials]    = useState<string[]>([]);
+  const [lossReason,         setLossReason]         = useState("");
+  const [lossLocation,       setLossLocation]       = useState("");
+  const [faultReason,        setFaultReason]        = useState("");
+  const [resolveNotes,       setResolveNotes]       = useState("");
+  const [resolveSuccess,     setResolveSuccess]     = useState("");
 
   const logParams = useMemo(() => {
-    const base: Record<string, string | number> = {
-      movement_type: "issue",
-      date: logDate,
-    };
-    if (role !== "dealer_owner" && role !== "operations_manager") {
-      // Field roles only see their own issuances
-      if (user?.id) base.created_by = user.id;
-    }
-    return base;
-  }, [role, user, logDate]);
+      const base: Record<string, string | number> = {
+        movement_type: "issue",
+        date: logDate,
+        page_size: 1000,           // ← add this
+        ...(logBranch ? { branch: Number(logBranch) } : {}),
+      };
+      if (role !== "dealer_owner" && role !== "operations_manager") {
+        if (user?.id) base.created_by = user.id;
+      }
+      return base;
+    }, [role, user, logDate, logBranch]);
 
   const { data: movementsData, isLoading: movementsLoading } = useAllSIMMovements(logParams);
-  const issueMovements = movementsData?.results ?? [];
+  const issueMovements = Array.isArray(movementsData) ? movementsData : (movementsData?.results ?? []);
 
   interface DestOption {
     label: string; userId?: number; branchId?: number; vanId?: number;
@@ -402,6 +476,24 @@ export default function IssueSims() {
     return [];
   }, [selectedType, branches, vanTeams, baUsers, externalAgents, role, user]);
 
+    const selectedDestNum = typeof selectedDest === "number" ? selectedDest : null;
+
+    // ─── Derive destination branch for stock picker pre-filter ────────────────
+    const destinationBranchId = useMemo(() => {
+      if (selectedDestNum === null) return undefined;
+    const opt = destOptions[selectedDestNum];
+    if (!opt) return undefined;
+    if (selectedType === "ba" && opt.userId) {
+      const memberVan = vanTeams.find(v =>
+        v.members?.some(m => String(m.agent) === String(opt.userId))
+      );
+      return memberVan ? memberVan.branch : undefined;
+    }
+    if (selectedType === "van" && opt.branchId) return opt.branchId;
+    if (selectedType === "branch" && opt.branchId) return opt.branchId;
+    return undefined;
+  }, [selectedDestNum, destOptions, selectedType, vanTeams]);
+
   // ─── Early return AFTER all hooks ─────────────────────────────────────────
   if (!permissions.canView) {
     return (
@@ -430,8 +522,6 @@ export default function IssueSims() {
   const simSummary = simTab === "single"
     ? `${serialList.length} individual SIM${serialList.length !== 1 ? "s" : ""}`
     : rangeValid ? `${rangeCount!.toLocaleString()} SIMs (${rangeStart} – ${rangeEnd})` : "";
-
-  const selectedDestNum = typeof selectedDest === "number" ? selectedDest : null;
 
   const canSubmit =
     selectedDest !== "" &&
@@ -490,13 +580,340 @@ export default function IssueSims() {
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
     try {
-      await bulkIssue.mutateAsync(payload as Parameters<typeof bulkIssue.mutateAsync>[0]);
+      const result = await bulkIssue.mutateAsync(payload as Parameters<typeof bulkIssue.mutateAsync>[0]);
       showSuccess(`${serials.length.toLocaleString()} SIM${serials.length !== 1 ? "s" : ""} issued successfully!`);
+      await queryClient.invalidateQueries({ queryKey: ["sim-movements"] });
       resetForm();
+      // ── Check for unresolved alert from backend ──────────────────────────
+      if (result?.unresolved_alert) {
+        setUnresolvedAlert(result.unresolved_alert);
+        setSelectedSerials(result.unresolved_alert.unresolved_serials);
+      }
     } catch {
       showError("Failed to issue SIMs. Please check serials and try again.");
       setShowConfirm(false);
     }
+  };
+
+  // ── Resolve handlers ──────────────────────────────────────────────────────
+
+  const handleResolveRegister = async () => {
+    if (!unresolvedAlert) return;
+    try {
+      await resolveRegister.mutateAsync({
+        ba_id: unresolvedAlert.ba_id,
+        serial_numbers: selectedSerials,
+        notes: resolveNotes,
+      });
+      setResolveSuccess(`${selectedSerials.length} SIM(s) registered on behalf of ${unresolvedAlert.ba_name}.`);
+      setTimeout(() => { setUnresolvedAlert(null); setResolveMode(null); setResolveSuccess(""); }, 2500);
+    } catch {
+      showError("Failed to register SIMs. Please try again.");
+    }
+  };
+
+  const handleResolveLost = async () => {
+    if (!unresolvedAlert || !lossReason.trim()) return;
+    try {
+      await resolveLost.mutateAsync({
+        ba_id: unresolvedAlert.ba_id,
+        serial_numbers: selectedSerials,
+        loss_reason: lossReason.trim(),
+        loss_location: lossLocation.trim() || undefined,
+        notes: resolveNotes.trim() || undefined,
+      });
+      setResolveSuccess(`${selectedSerials.length} SIM(s) marked as lost.`);
+      setTimeout(() => { setUnresolvedAlert(null); setResolveMode(null); setResolveSuccess(""); setLossReason(""); setLossLocation(""); }, 2500);
+    } catch {
+      showError("Failed to mark SIMs as lost. Please try again.");
+    }
+  };
+
+  const handleResolveFaulty = async () => {
+    if (!unresolvedAlert || !faultReason.trim()) return;
+    try {
+      await resolveFaulty.mutateAsync({
+        ba_id: unresolvedAlert.ba_id,
+        serial_numbers: selectedSerials,
+        fault_reason: faultReason.trim(),
+        notes: resolveNotes.trim() || undefined,
+      });
+      setResolveSuccess(`${selectedSerials.length} SIM(s) marked as faulty. Dealer notified.`);
+      setTimeout(() => { setUnresolvedAlert(null); setResolveMode(null); setResolveSuccess(""); setFaultReason(""); }, 2500);
+    } catch {
+      showError("Failed to mark SIMs as faulty. Please try again.");
+    }
+  };
+
+  const handleReturnRedirect = () => {
+    if (!unresolvedAlert) return;
+    setUnresolvedAlert(null);
+    setResolveMode(null);
+    // Navigate to return page — the BA name and serials are in state for reference
+    navigate("/return-sims", {
+      state: {
+        prefill_ba_id:      unresolvedAlert.ba_id,
+        prefill_ba_name:    unresolvedAlert.ba_name,
+        prefill_serials:    unresolvedAlert.unresolved_serials,
+      }
+    });
+  };
+
+  // ─── Unresolved Alert Modal ───────────────────────────────────────────────
+
+  const UnresolvedAlertModal = () => {
+    if (!unresolvedAlert) return null;
+
+    const isResolvePending =
+      resolveRegister.isPending || resolveLost.isPending || resolveFaulty.isPending;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-background/70 backdrop-blur-sm" />
+        <div className="relative w-full max-w-lg rounded-xl border border-amber-500/40 bg-card shadow-2xl max-h-[90vh] overflow-y-auto">
+
+          {/* Header */}
+          <div className="flex items-start gap-3 border-b border-border px-6 py-5">
+            <div className="h-10 w-10 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-heading text-lg font-semibold text-foreground">
+                Unresolved SIMs — Action Required
+              </h3>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                <span className="font-medium text-amber-500">{unresolvedAlert.ba_name}</span> still has{" "}
+                <span className="font-medium text-foreground">{unresolvedAlert.unresolved_count} SIM(s)</span>{" "}
+                from <span className="font-medium text-foreground">{unresolvedAlert.issued_at}</span> that are unregistered.
+              </p>
+            </div>
+            {!resolveMode && (
+              <button onClick={() => setUnresolvedAlert(null)}
+                className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors shrink-0">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="p-6 space-y-4">
+
+            {/* Success state */}
+            {resolveSuccess && (
+              <div className="flex items-center gap-3 rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3">
+                <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0" />
+                <p className="text-sm font-medium text-green-500">{resolveSuccess}</p>
+              </div>
+            )}
+
+            {/* Unresolved serials list */}
+            {!resolveMode && !resolveSuccess && (
+              <>
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-32 overflow-y-auto flex flex-wrap gap-1.5">
+                  {unresolvedAlert.unresolved_serials.map(s => (
+                    <span key={s} className="font-mono text-xs bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded px-2 py-0.5">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  Choose how to resolve these SIMs before the next issuance. All {unresolvedAlert.unresolved_count} SIMs must be accounted for.
+                </p>
+
+                {/* 3 action buttons */}
+                <div className="grid grid-cols-1 gap-2">
+                  <button onClick={() => { setResolveMode("register"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); }}
+                    className="flex items-center gap-3 rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3 text-left hover:bg-green-500/20 transition-colors">
+                    <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Register All on Behalf of BA</p>
+                      <p className="text-xs text-muted-foreground">BA sold them but couldn't mark as registered. You confirm they are sold.</p>
+                    </div>
+                  </button>
+
+                  <button onClick={() => { setResolveMode("lost"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); }}
+                    className="flex items-center gap-3 rounded-lg border border-orange-500/30 bg-orange-500/10 px-4 py-3 text-left hover:bg-orange-500/20 transition-colors">
+                    <Skull className="h-5 w-5 text-orange-400 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Mark as Lost</p>
+                      <p className="text-xs text-muted-foreground">SIMs were stolen, lost in the field, or cannot be recovered.</p>
+                    </div>
+                  </button>
+
+                  <button onClick={() => { setResolveMode("faulty"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); }}
+                    className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-left hover:bg-yellow-500/20 transition-colors">
+                    <Wrench className="h-5 w-5 text-yellow-400 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Report as Faulty</p>
+                      <p className="text-xs text-muted-foreground">Safaricom registration error — SIMs cannot be activated.</p>
+                    </div>
+                  </button>
+
+                  <button onClick={handleReturnRedirect}
+                    className="flex items-center gap-3 rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-3 text-left hover:bg-purple-500/20 transition-colors">
+                    <RotateCcw className="h-5 w-5 text-purple-400 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Return SIMs to Van</p>
+                      <p className="text-xs text-muted-foreground">BA is returning all SIMs. Redirects to the return page.</p>
+                    </div>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ── Register mode ── */}
+            {resolveMode === "register" && !resolveSuccess && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setResolveMode(null)} className="text-muted-foreground hover:text-foreground transition-colors">
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <p className="text-sm font-semibold text-foreground">Register All on Behalf of BA</p>
+                </div>
+
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
+                  {selectedSerials.map(s => (
+                    <span key={s} className="font-mono text-xs bg-green-500/10 text-green-500 border border-green-500/20 rounded px-2 py-0.5">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-500">
+                  ⚠️ You are confirming that <strong>{unresolvedAlert.ba_name}</strong> sold all {selectedSerials.length} SIM(s) to customers. This will be logged against your account.
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">Notes (optional)</label>
+                  <textarea rows={2} value={resolveNotes} onChange={e => setResolveNotes(e.target.value)}
+                    placeholder="Any additional context…"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none" />
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={() => setResolveMode(null)}
+                    className="flex-1 rounded-md border border-border py-2 text-sm font-medium hover:bg-accent transition-colors">
+                    Back
+                  </button>
+                  <button onClick={handleResolveRegister} disabled={isResolvePending}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md bg-green-600 py-2 text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity">
+                    {resolveRegister.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {resolveRegister.isPending ? "Registering…" : `Confirm Register (${selectedSerials.length})`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Lost mode ── */}
+            {resolveMode === "lost" && !resolveSuccess && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setResolveMode(null)} className="text-muted-foreground hover:text-foreground transition-colors">
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <p className="text-sm font-semibold text-foreground">Mark SIMs as Lost</p>
+                </div>
+
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
+                  {selectedSerials.map(s => (
+                    <span key={s} className="font-mono text-xs bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded px-2 py-0.5">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Reason for Loss <span className="text-destructive">*</span>
+                  </label>
+                  <input value={lossReason} onChange={e => setLossReason(e.target.value)}
+                    placeholder="e.g. Stolen at Kibera market, BA was mugged"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">Location (optional)</label>
+                  <input value={lossLocation} onChange={e => setLossLocation(e.target.value)}
+                    placeholder="e.g. Kibera, Nairobi"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">Additional Notes (optional)</label>
+                  <textarea rows={2} value={resolveNotes} onChange={e => setResolveNotes(e.target.value)}
+                    placeholder="Any other details…"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none" />
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={() => setResolveMode(null)}
+                    className="flex-1 rounded-md border border-border py-2 text-sm font-medium hover:bg-accent transition-colors">
+                    Back
+                  </button>
+                  <button onClick={handleResolveLost} disabled={!lossReason.trim() || isResolvePending}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md bg-orange-600 py-2 text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity">
+                    {resolveLost.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {resolveLost.isPending ? "Marking Lost…" : `Mark ${selectedSerials.length} as Lost`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Faulty mode ── */}
+            {resolveMode === "faulty" && !resolveSuccess && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setResolveMode(null)} className="text-muted-foreground hover:text-foreground transition-colors">
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <p className="text-sm font-semibold text-foreground">Report Faulty SIMs</p>
+                </div>
+
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
+                  {selectedSerials.map(s => (
+                    <span key={s} className="font-mono text-xs bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded px-2 py-0.5">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Fault Description <span className="text-destructive">*</span>
+                  </label>
+                  <input value={faultReason} onChange={e => setFaultReason(e.target.value)}
+                    placeholder="e.g. Registration error on Safaricom system"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">Additional Notes (optional)</label>
+                  <textarea rows={2} value={resolveNotes} onChange={e => setResolveNotes(e.target.value)}
+                    placeholder="e.g. BA tried 5 times, same error each time…"
+                    className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none" />
+                </div>
+
+                <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-4 py-3 text-xs text-yellow-400">
+                  ⚠️ This will alert the dealer owner to contact Safaricom. These SIMs will be blocked from re-issue until resolved.
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={() => setResolveMode(null)}
+                    className="flex-1 rounded-md border border-border py-2 text-sm font-medium hover:bg-accent transition-colors">
+                    Back
+                  </button>
+                  <button onClick={handleResolveFaulty} disabled={!faultReason.trim() || isResolvePending}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md bg-yellow-600 py-2 text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity">
+                    {resolveFaulty.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {resolveFaulty.isPending ? "Reporting…" : `Report ${selectedSerials.length} as Faulty`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -721,6 +1138,15 @@ export default function IssueSims() {
               <div className="flex items-center gap-2 flex-wrap">
                 <input type="date" value={logDate} onChange={e => setLogDate(e.target.value)}
                   className="rounded-md border border-border bg-accent py-1.5 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
+                {(role === "dealer_owner" || role === "operations_manager") && (
+                  <select value={logBranch} onChange={e => setLogBranch(e.target.value)}
+                    className="rounded-md border border-border bg-accent py-1.5 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+                    <option value="">All Branches</option>
+                    {branches.map(b => (
+                      <option key={b.id} value={String(b.id)}>{b.name}</option>
+                    ))}
+                  </select>
+                )}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <input value={logSearch} onChange={e => setLogSearch(e.target.value)} placeholder="Search…"
@@ -729,55 +1155,42 @@ export default function IssueSims() {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-muted-foreground">
-                    <th className="pb-3 text-left font-medium">Time</th>
-                    <th className="pb-3 text-left font-medium">To</th>
-                    <th className="pb-3 text-left font-medium">From (Warehouse)</th>
-                    <th className="pb-3 text-left font-medium">SIM Serial</th>
-                    <th className="pb-3 text-left font-medium">By</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {movementsLoading ? (
-                    <tr><td colSpan={5} className="py-8 text-center">
-                      <Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
-                    </td></tr>
-                  ) : issueMovements.length === 0 ? (
-                    <tr><td colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
-                      No issuances found for {logDate === new Date().toISOString().split("T")[0] ? "today" : logDate}.
-                    </td></tr>
-                  ) : issueMovements
-                      .filter(m =>
-                        !logSearch ||
-                        m.sim?.serial_number?.includes(logSearch) ||
-                        m.to_branch?.name?.toLowerCase().includes(logSearch.toLowerCase()) ||
-                        m.to_user?.full_name?.toLowerCase().includes(logSearch.toLowerCase())
-                      )
-                      .map(m => (
-                    <tr key={m.id} className="border-b border-border/50 hover:bg-accent/50 transition-colors">
-                      <td className="py-3 text-xs text-muted-foreground">
-                        {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </td>
-                      <td className="py-3 text-sm font-medium text-foreground">
-                        {m.to_user?.full_name ?? m.to_branch?.name ?? "—"}
-                      </td>
-                      <td className="py-3 text-xs text-amber-500">
-                        {m.from_branch?.name ?? "Warehouse"}
-                      </td>
-                      <td className="py-3 font-mono text-xs text-primary">
-                        {m.sim?.serial_number ?? "—"}
-                      </td>
-                      <td className="py-3 text-xs text-muted-foreground">
-                        {m.created_by?.full_name ?? "—"}
-                      </td>
-                    </tr>
+            {movementsLoading ? (
+              <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            ) : issueMovements.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {movementsData?.count ?? issueMovements.length} issuance{(movementsData?.count ?? issueMovements.length) !== 1 ? "s" : ""} on {logDate}
+              </p>
+            ) : (() => {
+              // Group movements by destination
+              const grouped = issueMovements
+                .filter(m =>
+                  !logSearch ||
+                  m.sim?.serial_number?.includes(logSearch) ||
+                  m.to_branch?.name?.toLowerCase().includes(logSearch.toLowerCase()) ||
+                  m.to_user?.full_name?.toLowerCase().includes(logSearch.toLowerCase())
+                )
+                .reduce<Record<string, { name: string; count: number; by: string; serials: string[] }>>(
+                  (acc, m) => {
+                    const key = m.to_user?.full_name ?? m.van_team?.name ?? m.to_branch?.name ?? "Unknown";
+                    if (!acc[key]) acc[key] = { name: key, count: 0, by: m.created_by?.full_name ?? "—", serials: [] };
+                    acc[key].count++;
+                    if (m.sim?.serial_number) acc[key].serials.push(m.sim.serial_number);
+                    return acc;
+                  }, {}
+                );
+
+              const rows = Object.values(grouped);
+              return (
+                <div className="space-y-2">
+                  {rows.map(row => (
+                    <LogRow key={row.name} row={row} />
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              );
+            })()}
 
             <p className="text-xs text-muted-foreground">
               {issueMovements.length} issuance{issueMovements.length !== 1 ? "s" : ""} on {logDate}
@@ -796,6 +1209,7 @@ export default function IssueSims() {
           onSelectRange={handleSelectRange}
           branches={branches}
           scopeParams={scopeParams}
+          defaultBranchId={destinationBranchId}
         />
       )}
 
@@ -851,6 +1265,7 @@ export default function IssueSims() {
           </div>
         </div>
       )}
+    <UnresolvedAlertModal />
     </div>
   );
 }

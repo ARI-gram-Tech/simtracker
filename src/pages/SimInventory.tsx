@@ -33,6 +33,8 @@ const STATUS_COLORS: Record<SIMStatus, string> = {
   activated:     "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
   returned:      "bg-purple-500/10 text-purple-400 border-purple-500/20",
   fraud_flagged: "bg-destructive/10 text-destructive border-destructive/20",
+  lost:          "bg-orange-500/10 text-orange-400 border-orange-500/20",
+  faulty:        "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
   replaced:      "bg-muted text-muted-foreground border-border",
 };
 
@@ -43,6 +45,8 @@ const STATUS_LABELS: Record<SIMStatus, string> = {
   activated:     "Activated",
   returned:      "Returned",
   fraud_flagged: "Fraud Flagged",
+  lost:          "Lost",
+  faulty:        "Faulty",
   replaced:      "Replaced",
 };
 
@@ -54,6 +58,8 @@ const MOVEMENT_ICONS: Record<MovementType, React.ElementType> = {
   flag:     ShieldAlert,
   replace:  RefreshCw,
   register: CheckCircle2,
+  lost:     ShieldAlert,
+  faulty:   AlertCircle,
 };
 
 const MOVEMENT_COLORS: Record<MovementType, string> = {
@@ -64,6 +70,8 @@ const MOVEMENT_COLORS: Record<MovementType, string> = {
   flag:     "bg-destructive/10 text-destructive",
   replace:  "bg-muted text-muted-foreground",
   register: "bg-green-500/10 text-green-500",
+  lost:     "bg-orange-500/10 text-orange-400",
+  faulty:   "bg-yellow-500/10 text-yellow-400",
 };
 
 const PAGE_TITLE: Record<string, string> = {
@@ -90,7 +98,7 @@ function getDisplayStatus(
   viewerUserId?: number, viewerBranchId?: number | null, viewerVanTeamId?: number | null,
 ): { label: string; colorClass: string } {
   const raw = sim.status;
-  if (["registered","activated","fraud_flagged","replaced","returned"].includes(raw)) {
+  if (["registered","activated","fraud_flagged","replaced","returned","lost","faulty"].includes(raw)) {
     return { label: STATUS_LABELS[raw], colorClass: STATUS_COLORS[raw] };
   }
   if (["dealer_owner","operations_manager","super_admin"].includes(viewerRole)) {
@@ -102,8 +110,10 @@ function getDisplayStatus(
     if (raw === "issued") return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
   }
   if (viewerRole === "van_team_leader") {
-    if (raw === "in_stock" && sim.van_team === viewerVanTeamId) return { label: "In Stock", colorClass: STATUS_COLORS.in_stock };
-    if (raw === "issued") return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
+      if (raw === "in_stock" && sim.van_team === viewerVanTeamId) 
+          return { label: "In My Van", colorClass: STATUS_COLORS.in_stock };
+      if (raw === "issued")   // ← this catches BAs' SIMs, not van stock
+          return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
   }
   if (viewerRole === "brand_ambassador" || viewerRole === "external_agent") {
     if (raw === "issued" && sim.current_holder === viewerUserId) return { label: "In My Hands", colorClass: STATUS_COLORS.issued };
@@ -301,9 +311,13 @@ function AddBatchModal({ onClose, dealerId, branches }: {
   const createBatch = useCreateSIMBatch();
 
   const rangeCount = useMemo(() => {
-    const s = parseInt(rangeStart), e = parseInt(rangeEnd);
-    if (isNaN(s) || isNaN(e) || e < s) return null;
-    return e - s + 1;
+      try {
+          const s = BigInt(rangeStart), e = BigInt(rangeEnd);
+          if (e < s) return null;
+          return Number(e - s + 1n);
+      } catch {
+          return null;
+      }
   }, [rangeStart, rangeEnd]);
 
   const handleAddSerial = () => {
@@ -563,6 +577,8 @@ function FilterBar({
         <option value="activated">Activated</option>
         <option value="returned">Returned</option>
         <option value="fraud_flagged">Fraud Flagged</option>
+        <option value="lost">Lost</option>
+        <option value="faulty">Faulty</option>
         <option value="replaced">Replaced</option>
       </select>
       {showBranchFilter && (
@@ -653,7 +669,11 @@ export default function SimInventory() {
   const visibleSIMs = useMemo(() => simsData?.results ?? [], [simsData?.results]);
   const totalCount  = simsData?.count ?? 0;
 
-  const kpiBase = useMemo(() => ({ ...scopeParams, page_size: 1 }), [scopeParams]);
+  const kpiBase = useMemo(() => ({
+  ...scopeParams,
+  ...(branchFilter && (role === "dealer_owner" || role === "operations_manager") ? { branch: Number(branchFilter) } : {}),
+  page_size: 1,
+}), [scopeParams, branchFilter, role]);
   const { data: kpiTotal      } = useSIMs(useMemo(() => ({ ...kpiBase }),                                [kpiBase]));
   const { data: kpiInStock    } = useSIMs(useMemo(() => ({ ...kpiBase, status: "in_stock"   as const }), [kpiBase]));
   const { data: kpiIssued     } = useSIMs(useMemo(() => ({ ...kpiBase, status: "issued"     as const }), [kpiBase]));

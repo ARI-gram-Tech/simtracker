@@ -47,7 +47,22 @@ export const inventoryService = {
     api.get<SIMMovement[]>(ENDPOINTS.SIM_MOVEMENTS(serial)).then(r => r.data),
 
   bulkIssue: (data: BulkIssueRequest) =>
-    api.post<{ detail: string }>(ENDPOINTS.BULK_ISSUE, data).then(r => r.data),
+    api.post<import("@/types/inventory.types").BulkIssueResponse>(ENDPOINTS.BULK_ISSUE, data).then(r => r.data),
+
+  resolveLost: (data: import("@/types/inventory.types").ResolveLostRequest) =>
+    api.post<{ lost: number; detail: string; deduction_raised: boolean; deduction_amount: number }>(
+      ENDPOINTS.RESOLVE_LOST, data
+    ).then(r => r.data),
+
+  resolveRegister: (data: import("@/types/inventory.types").ResolveRegisterRequest) =>
+    api.post<{ registered: number; detail: string }>(
+      ENDPOINTS.RESOLVE_REGISTER, data
+    ).then(r => r.data),
+
+  resolveFaulty: (data: import("@/types/inventory.types").ResolveFaultyRequest) =>
+    api.post<{ faulty: number; detail: string }>(
+      ENDPOINTS.RESOLVE_FAULTY, data
+    ).then(r => r.data),
 
   bulkReturn: (data: BulkReturnRequest) =>
     api.post<{ detail: string }>(ENDPOINTS.BULK_RETURN, data).then(r => r.data),

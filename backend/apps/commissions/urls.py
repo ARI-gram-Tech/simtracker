@@ -19,6 +19,7 @@ from .views import (
     ApproveDeductionView,
     DismissDeductionView,
     DeductionPendingCountView,
+    BASimBreakdownView,
 )
 
 urlpatterns = [
@@ -60,4 +61,6 @@ urlpatterns = [
          DismissDeductionView.as_view(),          name="deduction_dismiss"),
     path("deduction-records/pending-count/",
          DeductionPendingCountView.as_view(),     name="deduction_pending_count"),
+    path("ba-sim-breakdown/",
+         BASimBreakdownView.as_view(),            name="ba_sim_breakdown"),
 ]

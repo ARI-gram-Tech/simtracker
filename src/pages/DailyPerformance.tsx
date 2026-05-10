@@ -206,8 +206,8 @@ function BARow({ ba, showBranch }: { ba: LiveBAItem; showBranch: boolean }) {
 }
 
 // ── Daily drill-down table ────────────────────────────────────────────────────
-function DailyDrillDown({ date, branch, role }: { date: string; branch?: number; role?: string }) {
-  const { data, isLoading } = useDailyByDate({ date, branch });
+function DailyDrillDown({ date, branch, vanTeam, ba, role }: { date: string; branch?: number; vanTeam?: number; ba?: number; role?: string }) {
+  const { data, isLoading } = useDailyByDate({ date, branch, van_team: vanTeam, ba });
 
   if (isLoading) return (
     <div className="flex items-center justify-center py-8">
@@ -289,14 +289,18 @@ export default function DailyPerformance() {
     finance:            "Performance Overview",
     super_admin:        "Daily Performance",
   };
-  const [groupBy, setGroupBy]           = useState<GroupBy>("ba");
+  const [groupBy, setGroupBy] = useState<GroupBy>(
+      role === "branch_manager" ? "van" :
+      role === "van_team_leader" ? "ba" :
+      "ba"
+  );
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [showCalendar, setShowCalendar] = useState(false);
 
   const scopeParams = useMemo(() => {
-    if (role === "branch_manager"  && user?.branch_id)  return { branch:   Number(user.branch_id)  };
+    if (role === "branch_manager"  && user?.branch_id)  return { branch: Number(user.branch_id) };
     if (role === "van_team_leader" && user?.van_team_id) return { van_team: Number(user.van_team_id) };
-    if (role === "brand_ambassador" && user?.id)         return { ba:       Number(user.id)          };
+    if (role === "brand_ambassador" && user?.id)         return { ba: Number(user.id) };
     return {};
   }, [role, user]);
 
@@ -319,7 +323,7 @@ export default function DailyPerformance() {
     .map(b => ({ name: b.name.split(" ")[0], value: b.registered }));
 
   const canSeeBranches = ["dealer_owner", "operations_manager", "super_admin", "finance"].includes(role);
-  const canSeeVans     = canSeeBranches || role === "branch_manager";
+  const canSeeVans     = canSeeBranches || role === "branch_manager" || role === "van_team_leader";
   const showGroupTabs  = role !== "brand_ambassador";
 
   const availableGroups: { id: GroupBy; label: string; icon: typeof Truck }[] = !showGroupTabs ? [] : [
@@ -478,7 +482,13 @@ export default function DailyPerformance() {
         )}
 
         {/* Day drill-down */}
-        <DailyDrillDown date={selectedDate} branch={scopeParams.branch} role={role} />
+        <DailyDrillDown 
+          date={selectedDate} 
+          branch={scopeParams.branch} 
+          vanTeam={scopeParams.van_team} 
+          ba={scopeParams.ba} 
+          role={role} 
+        />
       </div>
 
       {/* Charts */}

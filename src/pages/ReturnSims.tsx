@@ -1,5 +1,6 @@
 // src/pages/ReturnSims.tsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import {
   RotateCcw, Search, Plus, X, CheckCircle2, AlertCircle,
   Clock, Loader2, PackageSearch, Check, ChevronLeft, ChevronRight, Filter,
@@ -336,6 +337,7 @@ export default function ReturnSims() {
   const externalAgents = useMemo<UserProfile[]>(() => agentData?.results ?? [], [agentData]);
 
   const bulkReturn = useBulkReturnSIMs();
+  const location   = useLocation();
 
   interface HolderOption {
     label: string;
@@ -400,7 +402,7 @@ export default function ReturnSims() {
   const [selectedDest,   setSelectedDest]   = useState<number | "">("");
   const [reason,         setReason]         = useState("");
   const [notes,          setNotes]          = useState("");
-  const [simTab,         setSimTab]         = useState<"single" | "range">("range");
+  const [simTab,         setSimTab]         = useState<"single" | "range">("single");
   const [singleSerial,   setSingleSerial]   = useState("");
   const [serialList,     setSerialList]     = useState<string[]>([]);
   const [duplicateError, setDuplicateError] = useState("");
@@ -411,6 +413,46 @@ export default function ReturnSims() {
   const [successMsg,     setSuccessMsg]     = useState("");
   const [logSearch,      setLogSearch]      = useState("");
   const [logDate,        setLogDate]        = useState<string>(new Date().toISOString().split("T")[0]);
+  const [prefillBanner,  setPrefillBanner]  = useState<string | null>(null);
+
+  // ── Pre-fill from IssueSims unresolved alert redirect ─────────────────────
+  useEffect(() => {
+    const state = location.state as {
+      prefill_ba_id?:   number;
+      prefill_ba_name?: string;
+      prefill_serials?: string[];
+    } | null;
+
+    if (!state?.prefill_ba_id || !state?.prefill_serials?.length) return;
+
+    // Switch to BA tab and single SIM mode
+    setSelectedType("ba");
+    setSimTab("single");
+    setSerialList(state.prefill_serials);
+    setReason("BA Resigned / Terminated");
+    setPrefillBanner(
+      `Pre-filled from unresolved alert: returning ${state.prefill_serials.length} SIM(s) from ${state.prefill_ba_name ?? "BA"}.`
+    );
+
+    // Auto-select the BA in the dropdown once holderOptions are ready
+    // We store the ba_id and match it after options load
+    setPrefillBaId(state.prefill_ba_id);
+
+    // Clear location state so refreshing doesn't re-trigger
+    window.history.replaceState({}, "");
+  }, [location.state]);
+
+  const [prefillBaId, setPrefillBaId] = useState<number | null>(null);
+
+  // Once holderOptions are loaded, find and select the pre-filled BA
+  useEffect(() => {
+    if (prefillBaId === null || selectedType !== "ba" || holderOptions.length === 0) return;
+    const idx = holderOptions.findIndex(o => o.userId === prefillBaId);
+    if (idx !== -1) {
+      setSelectedDest(idx);
+      setPrefillBaId(null); // done, clear it
+    }
+  }, [prefillBaId, holderOptions, selectedType]);
 
   const { data: movementsData, isLoading: movementsLoading } = useAllSIMMovements({
     movement_type: "return",
@@ -507,6 +549,8 @@ export default function ReturnSims() {
       setSingleSerial(""); setSerialList([]);
       setRangeStart(""); setRangeEnd("");
       setShowConfirm(false);
+      setPrefillBanner(null);
+      setPrefillBaId(null);
     } catch (err: unknown) {
       const detail =
         err && typeof err === "object" && "response" in err
@@ -542,6 +586,17 @@ export default function ReturnSims() {
               ? "You can process returns from van teams and brand ambassadors within your branch."
               : "You can process returns from brand ambassadors in your van team."}
           </p>
+        </div>
+      )}
+
+      {prefillBanner && (
+        <div className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
+          <p className="text-sm font-medium text-amber-500 flex-1">{prefillBanner}</p>
+          <button onClick={() => setPrefillBanner(null)}
+            className="text-amber-500 hover:text-amber-400 transition-colors shrink-0">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 

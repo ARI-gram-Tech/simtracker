@@ -5,10 +5,8 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useQuery } from "@tanstack/react-query";
 import { authService } from "@/api/auth.service";
-import { dealersService } from "@/api/dealers.service";
 import { useChangePassword } from "@/hooks/useAuth";
 import type { UserProfile } from "@/types/auth.types";
-import type { Branch, VanTeam } from "@/types/dealers.types";
 
 interface ProfileModalProps {
   open: boolean;
@@ -56,12 +54,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>("info");
 
-  const dealerId = user?.dealer_id ?? null;
-  const role     = user?.role ?? "";
-  const userId   = user?.id;
-
-  const showBranch  = ["branch_manager", "van_team_leader", "brand_ambassador"].includes(role);
-  const showVanTeam = ["van_team_leader", "brand_ambassador"].includes(role);
+  const role   = user?.role ?? "";
 
   // ── Fetch full profile from /api/auth/me/ ─────────────────────────────
   const { data: profile, isLoading: profileLoading } = useQuery<UserProfile>({
@@ -70,47 +63,11 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
     enabled: open,
   });
 
-  // ── Fetch all branches — same as Settings does ────────────────────────
-  const { data: branchesData, isLoading: branchesLoading } = useQuery({
-    queryKey: ["branches", dealerId],
-    queryFn: () => dealersService.listBranches(dealerId!),
-    enabled: open && !!dealerId && showBranch,
-    select: (data: Branch[] | { results: Branch[] }) =>
-      Array.isArray(data) ? data : data.results ?? [],
-  });
-  const branches: Branch[] = branchesData ?? [];
-
-  // ── Find assigned branch the same way Settings UserDrawer does ────────
-  // branch_manager: branch where b.manager === user.id
-  // van_team_leader / brand_ambassador: need van teams too
-  const assignedBranch = branches.find(b => String(b.manager) === String(userId));
-
-  // ── Fetch van teams for all branches (same as useAllVanTeams) ─────────
-  // We only need this for van_team_leader and brand_ambassador
-  const { data: vanTeamsData, isLoading: vanTeamsLoading } = useQuery({
-    queryKey: ["allVanTeamsForProfile", dealerId, branches.map(b => b.id).join(",")],
-    queryFn: async () => {
-      if (!dealerId || branches.length === 0) return [];
-      const results = await Promise.all(
-        branches.map(b => dealersService.listVanTeams(dealerId, b.id))
-      );
-      return results.flat();
-    },
-    enabled: open && !!dealerId && showVanTeam && branches.length > 0,
-  });
-  const vanTeams: VanTeam[] = vanTeamsData ?? [];
-
-  // Same lookup as Settings UserDrawer
-  const assignedVan   = vanTeams.find(v => String(v.leader) === String(userId));
-  const memberVan     = vanTeams.find(v => v.members?.some(m => String(m.agent) === String(userId)));
-
-  // Resolve branch name for van_team_leader / brand_ambassador
-  const vanBranchName = (assignedVan || memberVan)
-    ? branches.find(b => b.id === (assignedVan ?? memberVan)?.branch)?.name
-    : null;
-
-  // Loading state for the assignment rows
-  const assignmentLoading = branchesLoading || vanTeamsLoading;
+  // All assignment data comes directly from the profile (serializer computes it)
+  const assignmentLoading = profileLoading;
+  const assignedBranchName = profile?.branch_name ?? null;
+  const assignedVanName    = profile?.van_team_name ?? null;
+  const assignedVanBranch  = profile?.branch_name ?? null;
 
   // ── Change password ───────────────────────────────────────────────────
   const { mutate: changePassword, isPending, isSuccess, isError } = useChangePassword();
@@ -197,57 +154,57 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
               <InfoRow icon={<Phone  className="h-4 w-4" />} label="Phone" value={profile?.phone || "Not set"} loading={profileLoading} />
               <InfoRow icon={<Shield className="h-4 w-4" />} label="Role"  value={ROLE_LABELS[role] ?? role}   loading={profileLoading} />
 
-              {/* Branch manager → their branch is the one that lists them as manager */}
+              {/* Branch manager → their branch */}
               {role === "branch_manager" && (
                 <InfoRow
                   icon={<Building2 className="h-4 w-4" />}
                   label="Assigned Branch"
-                  value={assignedBranch?.name ?? "Not assigned"}
+                  value={assignedBranchName ?? "Not assigned"}
                   loading={assignmentLoading}
                 />
               )}
 
-              {/* Van team leader → the van that lists them as leader */}
+              {/* Van team leader → their van and branch */}
               {role === "van_team_leader" && (
                 <>
                   <InfoRow
                     icon={<Truck className="h-4 w-4" />}
                     label="Assigned Van Team"
-                    value={assignedVan?.name ?? "Not assigned"}
+                    value={assignedVanName ?? "Not assigned"}
                     loading={assignmentLoading}
                   />
-                  {assignedVan && (
+                  {assignedVanName && (
                     <InfoRow
                       icon={<Building2 className="h-4 w-4" />}
                       label="Branch"
-                      value={vanBranchName ?? "—"}
+                      value={assignedVanBranch ?? "—"}
                       loading={assignmentLoading}
                     />
                   )}
                 </>
               )}
 
-              {/* Brand ambassador → the van they're a member of */}
+              {/* Brand ambassador → their van and branch */}
               {role === "brand_ambassador" && (
                 <>
                   <InfoRow
                     icon={<Truck className="h-4 w-4" />}
                     label="Van Team"
-                    value={memberVan?.name ?? "Not assigned"}
+                    value={assignedVanName ?? "Not assigned"}
                     loading={assignmentLoading}
                   />
-                  {memberVan && (
+                  {assignedVanName && (
                     <InfoRow
                       icon={<Building2 className="h-4 w-4" />}
                       label="Branch"
-                      value={vanBranchName ?? "—"}
+                      value={assignedVanBranch ?? "—"}
                       loading={assignmentLoading}
                     />
                   )}
                 </>
               )}
 
-              {!showBranch && !showVanTeam && (
+              {!["branch_manager", "van_team_leader", "brand_ambassador"].includes(role) && (
                 <InfoRow icon={<User className="h-4 w-4" />} label="Access" value="All dealer branches" />
               )}
             </div>

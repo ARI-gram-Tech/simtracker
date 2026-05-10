@@ -1894,9 +1894,11 @@ function UsersTab({
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
 
+  const [page, setPage] = useState(1);
   const queryParams = {
     ...(selectedRole ? { role: selectedRole } : {}),
     ...(search       ? { search }             : {}),
+    page,
   };
 
   const { data, isLoading, isError, refetch } = useUsers(queryParams);
@@ -1945,13 +1947,13 @@ function UsersTab({
       <div className="flex flex-wrap gap-3">
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email…"
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search name or email…"
             autoComplete="off"      
             name="user-search"  
             className="w-full rounded-md border border-border bg-accent py-1.5 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
         </div>
         {!fixedRole && (
-          <select value={selectedRole} onChange={e => setSelectedRole(e.target.value)}
+          <select value={selectedRole} onChange={e => { setSelectedRole(e.target.value); setPage(1); }}
             className="rounded-md border border-border bg-accent py-1.5 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
             <option value="">All Roles</option>
             {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -2082,7 +2084,39 @@ function UsersTab({
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted-foreground">{filtered.length} of {allUsers.length} users</p>
+          <div className="flex items-center justify-between pt-2">
+<div className="flex items-center justify-between pt-2">
+            <p className="text-xs text-muted-foreground">
+              {filtered.length} of {data?.count ?? allUsers.length} users
+            </p>
+            {(data?.count ?? 0) > 20 && (
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={page === 1}
+                  onClick={() => setPage(p => p - 1)}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 transition-colors">
+                  Prev
+                </button>
+                <span className="text-xs text-muted-foreground">
+                  Page {page} of {Math.ceil((data?.count ?? 0) / 20)}
+                </span>
+                <button
+                  disabled={page >= Math.ceil((data?.count ?? 0) / 20)}
+                  onClick={() => setPage(p => p + 1)}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 transition-colors">
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
+            {(data?.count ?? 0) > allUsers.length && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  Showing {allUsers.length} of {data?.count}
+                </span>
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -3079,6 +3113,15 @@ export default function Settings() {
         onClose={() => setShowAddBranch(false)}
         onAdd={handleAddBranch}
       />
+
+      {dealerId && (
+        <AddCommissionRuleDialog
+          open={showAddCommissionRule}
+          dealerId={dealerId}
+          onClose={() => setShowAddCommissionRule(false)}
+          onAdd={handleAddCommissionRule}
+        />
+      )}
 
       {dealerId && (
         <AddDeductionRuleDialog

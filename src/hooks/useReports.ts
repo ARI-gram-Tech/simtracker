@@ -35,7 +35,7 @@ export function useAgentSummary(params?: { branch?: number; dealer?: number }) {
 }
 
 // ── Live aggregation hook ─────────────────────────────────────────────────────
-export function useLivePerformance(params?: { branch?: number }) {
+export function useLivePerformance(params?: { branch?: number; van_team?: number; ba?: number }) {
   return useQuery({
     queryKey: ["livePerformance", params],
     queryFn:  () => reportsService.getLiveSummary(params),
@@ -45,7 +45,7 @@ export function useLivePerformance(params?: { branch?: number }) {
   });
 }
 
-export function useDailyByDate(params?: { date?: string; branch?: number }) {
+export function useDailyByDate(params?: { date?: string; branch?: number; van_team?: number; ba?: number }) {
   return useQuery({
     queryKey: ["dailyByDate", params],
     queryFn:  () => reportsService.getDailyByDate(params),

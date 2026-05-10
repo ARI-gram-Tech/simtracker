@@ -1,10 +1,11 @@
+# accounts/serializers.py
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import ExternalAgent, User
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from apps.dealers.models import Branch, VanTeam
+from apps.dealers.models import Branch, VanTeam, VanTeamMember
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -35,15 +36,71 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
+    dealer_id = serializers.SerializerMethodField()
+    branch_id = serializers.SerializerMethodField()
+    branch_name = serializers.SerializerMethodField()
+    van_team_id = serializers.SerializerMethodField()
+    van_team_name = serializers.SerializerMethodField()
 
     def get_full_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
 
+    def get_dealer_id(self, obj):
+        return obj.dealer_org_id
+
+    def get_branch_id(self, obj):
+        if obj.role == "branch_manager":
+            branch = Branch.objects.filter(manager=obj).first()
+            return branch.id if branch else None
+        if obj.role == "van_team_leader":
+            team = VanTeam.objects.filter(leader=obj).first()
+            return team.branch_id if team else None
+        if obj.role == "brand_ambassador":
+            membership = VanTeamMember.objects.filter(
+                agent=obj).select_related("team__branch").first()
+            return membership.team.branch_id if membership else None
+        return None
+
+    def get_branch_name(self, obj):
+        if obj.role == "branch_manager":
+            branch = Branch.objects.filter(manager=obj).first()
+            return branch.name if branch else None
+        if obj.role == "van_team_leader":
+            team = VanTeam.objects.filter(leader=obj).first()
+            return team.branch.name if team and team.branch else None
+        if obj.role == "brand_ambassador":
+            membership = VanTeamMember.objects.filter(
+                agent=obj).select_related("team__branch").first()
+            return membership.team.branch.name if membership and membership.team.branch else None
+        return None
+
+    def get_van_team_id(self, obj):
+        if obj.role == "van_team_leader":
+            team = VanTeam.objects.filter(leader=obj).first()
+            return team.id if team else None
+        if obj.role == "brand_ambassador":
+            membership = VanTeamMember.objects.filter(
+                agent=obj).select_related("team").first()
+            return membership.team.id if membership else None
+        return None
+
+    def get_van_team_name(self, obj):
+        if obj.role == "van_team_leader":
+            team = VanTeam.objects.filter(leader=obj).first()
+            return team.name if team else None
+        if obj.role == "brand_ambassador":
+            membership = VanTeamMember.objects.filter(
+                agent=obj).select_related("team").first()
+            return membership.team.name if membership else None
+        return None
+
     class Meta:
         model = User
         fields = [
-            "id", "email", "first_name", "last_name", "full_name",  # ← add full_name
+            "id", "email", "first_name", "last_name", "full_name",
             "phone", "role", "is_active", "date_joined",
+            "dealer_id", "branch_id", "branch_name",
+            "van_team_id", "van_team_name",
         ]
         read_only_fields = ["id", "date_joined"]
 

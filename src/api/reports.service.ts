@@ -23,10 +23,10 @@ export const reportsService = {
     api.get<AgentPerformanceSummaryItem[]>(ENDPOINTS.AGENT_SUMMARY, { params }).then(r => r.data),
 
   // ── Live aggregation (no snapshots needed) ────────────────────────────────
-  getLiveSummary: (params?: { branch?: number }) =>
+  getLiveSummary: (params?: { branch?: number; van_team?: number; ba?: number }) =>
     api.get<LivePerformanceSummary>(ENDPOINTS.LIVE_PERFORMANCE, { params }).then(r => r.data),
 
-  getDailyByDate: (params?: { date?: string; branch?: number }) =>
+  getDailyByDate: (params?: { date?: string; branch?: number; van_team?: number; ba?: number }) =>
     api.get(ENDPOINTS.DAILY_BY_DATE, { params }).then(r => r.data),
 
   getAgentPerformanceLive: (params?: { branch?: number }) =>

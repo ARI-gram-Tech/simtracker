@@ -3,6 +3,7 @@
 # RegisterView now:
 #   1. Enforces the dealer's max_users plan limit.
 #   2. Sends a welcome email with login credentials after user creation.
+#   3. Verifies dealer ownership before registering users under a dealer.
 # ─────────────────────────────────────────────────────────────────────────────
 
 from functools import wraps
@@ -19,7 +20,6 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from .serializers import PasswordResetRequestSerializer, PasswordResetConfirmSerializer, ExternalAgentSerializer
 
-
 from .models import User, ExternalAgent
 from .serializers import (
     CustomTokenObtainPairSerializer,
@@ -32,10 +32,30 @@ from apps.dealers.models import Dealer, Branch, VanTeam, VanTeamMember
 from apps.invoices.serializers import InvoiceSerializer
 
 import logging
-
 from django.db import models
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Dealer Ownership Helper ──────────────────────────────────────────────────
+
+def _assert_dealer_ownership(user, dealer):
+    """
+    Raises PermissionDenied if the requesting user does not own the dealer.
+    Admins and staff bypass this check.
+    """
+    if user.is_staff:
+        return
+    user_dealer = None
+    try:
+        user_dealer = user.dealer
+    except Exception:
+        pass
+    if not user_dealer and user.dealer_org_id:
+        user_dealer = user.dealer_org
+    if not user_dealer or user_dealer.pk != dealer.pk:
+        raise PermissionDenied(
+            "You do not have access to this dealer's resources.")
 
 
 # ─── Feature Gate Decorator ───────────────────────────────────────────────────
@@ -48,11 +68,6 @@ def feature_required(feature_name: str):
         @feature_required("analytics_dashboard")
         class AnalyticsDashboardView(APIView):
             ...
-
-    Resolves dealer from:
-        1. request.user.dealer (owner)
-        2. branch manager → dealer
-        3. team leader / member → dealer
     """
     def decorator(view_class):
         original_dispatch = view_class.dispatch
@@ -75,13 +90,11 @@ def feature_required(feature_name: str):
 
 
 def _resolve_dealer(user) -> Dealer | None:
-    # For dealer_owner: use the OneToOne reverse
     try:
-        return user.dealer  # still correct for dealer_owner
+        return user.dealer
     except Dealer.DoesNotExist:
         pass
-    # For everyone else: check the FK field directly
-    if user.dealer_org_id:                         # ← add this
+    if user.dealer_org_id:
         return user.dealer_org
     branch = Branch.objects.filter(manager=user).first()
     if branch:
@@ -94,8 +107,8 @@ def _resolve_dealer(user) -> Dealer | None:
         return member.team.branch.dealer
     return None
 
-# ─── Auth Views ───────────────────────────────────────────────────────────────
 
+# ─── Auth Views ───────────────────────────────────────────────────────────────
 
 class LoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
@@ -143,13 +156,11 @@ class ChangePasswordView(APIView):
 
 class UserListView(generics.ListAPIView):
     serializer_class = UserSerializer
-    # ← allow any logged-in user
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
 
-        # Django staff/superadmin sees everyone
         if user.is_staff:
             qs = User.objects.all()
 
@@ -162,7 +173,7 @@ class UserListView(generics.ListAPIView):
                 models.Q(managed_branch__dealer=dealer) |
                 models.Q(led_team__branch__dealer=dealer) |
                 models.Q(team_memberships__team__branch__dealer=dealer) |
-                models.Q(external_agent_profile__dealer=dealer) |   # ← new
+                models.Q(external_agent_profile__dealer=dealer) |
                 models.Q(id=dealer.owner_id)
             ).distinct()
 
@@ -175,10 +186,9 @@ class UserListView(generics.ListAPIView):
                 models.Q(managed_branch__dealer=dealer) |
                 models.Q(led_team__branch__dealer=dealer) |
                 models.Q(team_memberships__team__branch__dealer=dealer) |
-                models.Q(external_agent_profile__dealer=dealer)    # ← new
+                models.Q(external_agent_profile__dealer=dealer)
             ).distinct()
 
-        # Branch manager sees users in their branch only
         elif user.role == "branch_manager":
             branch = Branch.objects.filter(manager=user).first()
             if not branch:
@@ -188,7 +198,6 @@ class UserListView(generics.ListAPIView):
                 models.Q(team_memberships__team__branch=branch)
             ).distinct()
 
-        # Van team leader sees members of their team only
         elif user.role == "van_team_leader":
             team = VanTeam.objects.filter(leader=user).first()
             if not team:
@@ -200,9 +209,9 @@ class UserListView(generics.ListAPIView):
         else:
             return User.objects.none()
 
-        # Optional filters from query params
         role = self.request.query_params.get("role")
         search = self.request.query_params.get("search")
+        dealer_id = self.request.query_params.get("dealer_id")
 
         if role:
             qs = qs.filter(role=role)
@@ -212,15 +221,19 @@ class UserListView(generics.ListAPIView):
                 models.Q(last_name__icontains=search) |
                 models.Q(email__icontains=search)
             )
+        if dealer_id and user.is_staff:
+            qs = qs.filter(
+                models.Q(dealer_org_id=dealer_id) |
+                models.Q(dealer__id=dealer_id)
+            ).distinct()
 
         return qs.order_by("-date_joined")
 
-# ─── Register View ────────────────────────────────────────────────────────────
 
+# ─── Register View ────────────────────────────────────────────────────────────
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
-    # ← changed from IsAdminUser
     permission_classes = [permissions.IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
@@ -251,6 +264,9 @@ class RegisterView(generics.CreateAPIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # ── OWNERSHIP CHECK — you can only register users under your own dealer
+            _assert_dealer_ownership(request.user, dealer)
+
             require_active_subscription(dealer)
             overage_invoice = enforce_limit(dealer, "users")
 
@@ -259,7 +275,6 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        # Link the new user to the dealer
         if dealer_id:
             user.dealer_org = dealer
             user.save(update_fields=["dealer_org"])
@@ -279,6 +294,7 @@ class RegisterView(generics.CreateAPIView):
                     "notes":               request.data.get("notes", "").strip(),
                 }
             )
+
         # ── 4. Send welcome email ─────────────────────────────────────────────
         try:
             from apps.notifications.service import send_welcome_email
@@ -305,6 +321,8 @@ class RegisterView(generics.CreateAPIView):
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
+# ─── Password Reset ───────────────────────────────────────────────────────────
+
 class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -317,7 +335,6 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
-            # Explicit — fine for SimTrack since users don't self-register
             return Response(
                 {"detail": "No account found with that email address."},
                 status=status.HTTP_404_NOT_FOUND,
@@ -337,10 +354,6 @@ class PasswordResetRequestView(APIView):
 
 
 class PasswordResetConfirmView(APIView):
-    """
-    POST /api/accounts/password-reset/confirm/
-    Body: { "uid": "...", "token": "...", "new_password": "..." }
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -353,6 +366,8 @@ class PasswordResetConfirmView(APIView):
 
         return Response({"detail": "Password has been reset successfully."})
 
+
+# ─── User Detail ──────────────────────────────────────────────────────────────
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = UserSerializer
@@ -375,15 +390,16 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     def update(self, request, *args, **kwargs):
         new_role = request.data.get("role")
         if new_role in ("dealer_owner", "super_admin") and not request.user.is_staff:
-            return Response({"error": "You cannot assign this role."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"error": "You cannot assign this role."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # Get old role before update
         instance = self.get_object()
         old_role = instance.role
 
         response = super().update(request, *args, **kwargs)
 
-        # ─── ADD THIS NOTIFICATION (if role changed) ───────────────────────────
         if new_role and old_role != new_role:
             from apps.notifications.models import Notification
 
@@ -401,7 +417,6 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
                 type=Notification.Type.SYSTEM,
             )
 
-            # Notify dealer owner (if different from the user)
             dealer = _resolve_dealer(instance)
             if dealer and dealer.owner and dealer.owner.id != instance.id:
                 Notification.objects.create(
@@ -416,7 +431,6 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
                     ),
                     type=Notification.Type.SYSTEM,
                 )
-        # ───────────────────────────────────────────────────────────────────────
 
         return response
 
@@ -428,12 +442,15 @@ class ExternalAgentListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        _assert_dealer_ownership(self.request.user, dealer)
         return ExternalAgent.objects.filter(
             dealer_id=self.kwargs["dealer_pk"]
         ).select_related("user").order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
         dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        _assert_dealer_ownership(request.user, dealer)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(dealer=dealer)
@@ -445,6 +462,8 @@ class ExternalAgentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        _assert_dealer_ownership(self.request.user, dealer)
         return ExternalAgent.objects.filter(
             dealer_id=self.kwargs["dealer_pk"]
         ).select_related("user")

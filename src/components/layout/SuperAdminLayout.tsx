@@ -94,6 +94,47 @@ function SuperAdminSidebar({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+const DAILY_QUOTES = [
+  "Success is the sum of small efforts, repeated day in and day out.",
+  "The secret of getting ahead is getting started.",
+  "Don't watch the clock; do what it does. Keep going.",
+  "Great things never come from comfort zones.",
+  "Push yourself, because no one else is going to do it for you.",
+  "Dream it. Wish it. Do it.",
+  "Little things make big days.",
+  "It's going to be hard, but hard is not impossible.",
+  "Wake up with determination. Go to bed with satisfaction.",
+  "Do something today that your future self will thank you for.",
+];
+
+function getDailyQuote() {
+  const dayOfYear = Math.floor(
+    (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000
+  );
+  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+}
+
+function SuperAdminGreeting({ name }: { name: string }) {
+  const greeting = getGreeting();
+  const quote    = getDailyQuote();
+
+  return (
+    <div className="hidden md:flex flex-col">
+      <span className="text-sm font-medium text-foreground">
+        {greeting}, {name} 👋
+      </span>
+      <span className="text-xs text-primary/70 italic truncate max-w-md">"{quote}"</span>
+    </div>
+  );
+}
+
 function SuperAdminTopBar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -119,7 +160,7 @@ function SuperAdminTopBar({ collapsed, onToggle }: { collapsed: boolean; onToggl
           <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
             <Shield className="h-3 w-3" /> Super Admin
           </span>
-          <span className="text-sm text-muted-foreground">Good morning, {user?.name?.split(" ")[0]} 👋</span>
+          <SuperAdminGreeting name={user?.name?.split(" ")[0] ?? "Admin"} />
         </div>
       </div>
 
@@ -134,7 +175,17 @@ function SuperAdminTopBar({ collapsed, onToggle }: { collapsed: boolean; onToggl
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-4">
+        {/* Date + time — right side */}
+        <div className="hidden md:flex flex-col items-end leading-tight">
+          <span className="text-xs font-medium text-foreground">
+            {new Date().toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {new Date().toLocaleDateString("en-KE", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+          </span>
+        </div>
+
         <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-semibold text-primary">
           {initials}
         </div>

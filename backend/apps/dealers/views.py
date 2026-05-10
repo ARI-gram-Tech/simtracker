@@ -7,8 +7,10 @@
 
 from rest_framework import generics, permissions, status
 from rest_framework import permissions as drf_permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 from .models import Dealer, Branch, VanTeam, VanTeamMember, MobiGo
 from .serializers import (
@@ -20,6 +22,52 @@ from services.usage_service import get_usage_summary
 from apps.invoices.serializers import InvoiceSerializer
 
 
+# ─── Ownership Mixin ──────────────────────────────────────────────────────────
+class DealerOwnershipMixin:
+    def _resolve_user_dealer(self):
+        user = self.request.user
+        # Dealer owner — linked via OneToOne
+        try:
+            return user.dealer
+        except Exception:
+            pass
+        # All other staff — linked via dealer_org FK
+        if user.dealer_org_id:
+            return user.dealer_org
+        return None
+
+    def get_dealer(self):
+        dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        if self.request.user.is_staff:
+            return dealer
+        user_dealer = self._resolve_user_dealer()
+        if not user_dealer or user_dealer.pk != dealer.pk:
+            raise PermissionDenied(
+                "You do not have access to this dealer's resources.")
+        return dealer
+
+    def check_dealer_ownership(self, dealer_pk):
+        dealer = get_object_or_404(Dealer, pk=dealer_pk)
+        if self.request.user.is_staff:
+            return dealer
+        user_dealer = self._resolve_user_dealer()
+        if not user_dealer or user_dealer.pk != dealer.pk:
+            raise PermissionDenied(
+                "You do not have access to this dealer's resources.")
+        return dealer
+
+    def check_dealer_ownership_via_team(self, team_pk):
+        dealer = get_object_or_404(
+            Dealer, branches__van_teams__id=team_pk)
+        if self.request.user.is_staff:
+            return dealer
+        user_dealer = self._resolve_user_dealer()
+        if not user_dealer or user_dealer.pk != dealer.pk:
+            raise PermissionDenied(
+                "You do not have access to this dealer's resources.")
+        return dealer
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _get_dealer_from_request(request) -> Dealer | None:
@@ -28,19 +76,16 @@ def _get_dealer_from_request(request) -> Dealer | None:
     Super admins pass ?dealer_id= or it's inferred from their dealer profile.
     Dealer staff always resolve to their own dealer.
     """
-    # Super admins can pass dealer_id explicitly
     dealer_id = request.query_params.get(
         "dealer_id") or request.data.get("dealer_id")
     if dealer_id:
         return Dealer.objects.filter(id=dealer_id).first()
 
-    # Otherwise infer from the authenticated user's dealer relationship
     try:
-        return request.user.dealer  # OneToOne: dealer owner
+        return request.user.dealer
     except Dealer.DoesNotExist:
         pass
 
-    # Try via branch manager or team membership
     branch = Branch.objects.filter(manager=request.user).first()
     if branch:
         return branch.dealer
@@ -63,22 +108,26 @@ class DealerListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAdminUser]
     queryset = Dealer.objects.all().order_by("-created_at")
 
+    def perform_create(self, serializer):
+        dealer = serializer.save()
+        # Auto-set dealer_org on the owner so they can see their own users
+        if dealer.owner:
+            dealer.owner.dealer_org = dealer
+            dealer.owner.save(update_fields=["dealer_org"])
+
 
 class IsDealerOwnerOrAdmin(drf_permissions.BasePermission):
-    """
-    Admins get full access.
-    Dealer owners can GET their own dealer record only.
-    """
-
     def has_object_permission(self, request, view, obj):
         if request.user.is_staff:
             return True
-        # Dealer owner can read their own dealer
         if request.method in drf_permissions.SAFE_METHODS:
-            try:
-                return obj.owner == request.user
-            except Exception:
-                return False
+            # Check via OneToOne (dealer owner)
+            if obj.owner == request.user:
+                return True
+            # Check via dealer_org FK (all other staff roles)
+            if request.user.dealer_org_id == obj.pk:
+                return True
+            return False
         return False
 
     def has_permission(self, request, view):
@@ -89,6 +138,13 @@ class DealerDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = DealerSerializer
     permission_classes = [IsDealerOwnerOrAdmin]
     queryset = Dealer.objects.all()
+
+    def perform_update(self, serializer):
+        dealer = serializer.save()
+        # Keep dealer_org in sync when owner changes
+        if dealer.owner and dealer.owner.dealer_org_id != dealer.pk:
+            dealer.owner.dealer_org = dealer
+            dealer.owner.save(update_fields=["dealer_org"])
 
 
 class DealerSuspendView(generics.GenericAPIView):
@@ -101,9 +157,7 @@ class DealerSuspendView(generics.GenericAPIView):
         dealer.subscription_status = "suspended"
         dealer.save()
 
-        # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────
         from apps.notifications.models import Notification
-
         if dealer.owner:
             Notification.objects.create(
                 recipient=dealer.owner,
@@ -120,7 +174,6 @@ class DealerSuspendView(generics.GenericAPIView):
                 ),
                 type=Notification.Type.ALERT,
             )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response(DealerSerializer(dealer).data, status=status.HTTP_200_OK)
 
@@ -135,9 +188,7 @@ class DealerActivateView(generics.GenericAPIView):
         dealer.subscription_status = "active"
         dealer.save()
 
-        # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────────
         from apps.notifications.models import Notification
-
         if dealer.owner:
             Notification.objects.create(
                 recipient=dealer.owner,
@@ -154,20 +205,7 @@ class DealerActivateView(generics.GenericAPIView):
                 ),
                 type=Notification.Type.SYSTEM,
             )
-        # ───────────────────────────────────────────────────────────────────────
 
-        return Response(DealerSerializer(dealer).data, status=status.HTTP_200_OK)
-
-
-class DealerActivateView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAdminUser]
-    queryset = Dealer.objects.all()
-
-    def patch(self, request, pk):
-        dealer = self.get_object()
-        dealer.is_active = True
-        dealer.subscription_status = "active"
-        dealer.save()
         return Response(DealerSerializer(dealer).data, status=status.HTTP_200_OK)
 
 
@@ -177,29 +215,45 @@ class DealerUsageView(generics.GenericAPIView):
     """
     GET /api/dealers/{id}/usage/
     Returns real-time usage vs plan limits.
+    Only the dealer owner or admin can access this.
     """
     permission_classes = [permissions.IsAuthenticated]
     queryset = Dealer.objects.all()
 
     def get(self, request, pk):
         dealer = self.get_object()
+
+        # Ownership check — dealer can only view their own usage
+        if not request.user.is_staff:
+            user_dealer = None
+            try:
+                user_dealer = request.user.dealer
+            except Exception:
+                pass
+            if not user_dealer and request.user.dealer_org_id:
+                user_dealer = request.user.dealer_org
+            if not user_dealer or user_dealer.pk != dealer.pk:
+                raise PermissionDenied(
+                    "You do not have access to this dealer's resources.")
+
         summary = get_usage_summary(dealer)
         return Response(summary, status=status.HTTP_200_OK)
 
 
 # ─── Branch CRUD (with limit enforcement) ────────────────────────────────────
 
-class BranchListCreateView(generics.ListCreateAPIView):
+class BranchListCreateView(DealerOwnershipMixin, generics.ListCreateAPIView):
     serializer_class = BranchSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.get_dealer()
         return Branch.objects.filter(
             dealer_id=self.kwargs["dealer_pk"]
         ).order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
-        dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        dealer = self.get_dealer()
 
         require_active_subscription(dealer)
         overage_invoice = enforce_limit(dealer, "branches")
@@ -216,10 +270,7 @@ class BranchListCreateView(generics.ListCreateAPIView):
                 "warning": "Branch limit exceeded. An overage invoice has been generated.",
             }
 
-            # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────
             from apps.notifications.models import Notification
-
-            # Notify dealer owner
             if dealer.owner:
                 Notification.objects.create(
                     recipient=dealer.owner,
@@ -234,41 +285,37 @@ class BranchListCreateView(generics.ListCreateAPIView):
                     ),
                     type=Notification.Type.ALERT,
                 )
-            # ───────────────────────────────────────────────────────────────────
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
-class BranchDetailView(generics.RetrieveUpdateDestroyAPIView):
+class BranchDetailView(DealerOwnershipMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = BranchSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.get_dealer()
         return Branch.objects.filter(dealer_id=self.kwargs["dealer_pk"])
+
 
 # ─── Branch Activate / Deactivate ─────────────────────────────────────────────
 
-
-class BranchDeactivateView(generics.GenericAPIView):
+class BranchDeactivateView(DealerOwnershipMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
-        return Branch.objects.filter(dealer_id=self.kwargs["dealer_pk"])
-
     def patch(self, request, dealer_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
         branch = get_object_or_404(Branch, pk=pk, dealer_id=dealer_pk)
         branch.is_active = False
         branch.save()
         return Response(BranchSerializer(branch).data, status=status.HTTP_200_OK)
 
 
-class BranchActivateView(generics.GenericAPIView):
+class BranchActivateView(DealerOwnershipMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
-        return Branch.objects.filter(dealer_id=self.kwargs["dealer_pk"])
-
     def patch(self, request, dealer_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
         branch = get_object_or_404(Branch, pk=pk, dealer_id=dealer_pk)
         branch.is_active = True
         branch.save()
@@ -277,27 +324,22 @@ class BranchActivateView(generics.GenericAPIView):
 
 # ─── Van Team CRUD (with limit enforcement) ───────────────────────────────────
 
-class VanTeamListCreateView(generics.ListCreateAPIView):
+class VanTeamListCreateView(DealerOwnershipMixin, generics.ListCreateAPIView):
     serializer_class = VanTeamSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.get_dealer()
         return VanTeam.objects.filter(
             branch_id=self.kwargs["branch_pk"]
         ).order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
-        dealer = Dealer.objects.get(
-            branches__id=self.kwargs["branch_pk"]
-        )
+        dealer = self.get_dealer()
 
-        # 1. Block suspended dealers
         require_active_subscription(dealer)
-
-        # 2. Enforce van limit
         overage_invoice = enforce_limit(dealer, "vans")
 
-        # 3. Create
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(branch_id=self.kwargs["branch_pk"])
@@ -310,10 +352,7 @@ class VanTeamListCreateView(generics.ListCreateAPIView):
                 "warning": "Van limit exceeded. An overage invoice has been generated.",
             }
 
-            # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────
             from apps.notifications.models import Notification
-
-            # Notify dealer owner
             if dealer.owner:
                 Notification.objects.create(
                     recipient=dealer.owner,
@@ -328,40 +367,59 @@ class VanTeamListCreateView(generics.ListCreateAPIView):
                     ),
                     type=Notification.Type.ALERT,
                 )
-            # ───────────────────────────────────────────────────────────────────
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
-class VanTeamDetailView(generics.RetrieveUpdateDestroyAPIView):
+class VanTeamDetailView(DealerOwnershipMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = VanTeamSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.get_dealer()
         return VanTeam.objects.filter(branch_id=self.kwargs["branch_pk"])
+
+
+# ─── Van Team Activate / Deactivate ───────────────────────────────────────────
+
+class VanTeamDeactivateView(DealerOwnershipMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, dealer_pk, branch_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
+        van = get_object_or_404(VanTeam, pk=pk, branch_id=branch_pk)
+        van.is_active = False
+        van.save()
+        return Response(VanTeamSerializer(van).data, status=status.HTTP_200_OK)
+
+
+class VanTeamActivateView(DealerOwnershipMixin, generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, dealer_pk, branch_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
+        van = get_object_or_404(VanTeam, pk=pk, branch_id=branch_pk)
+        van.is_active = True
+        van.save()
+        return Response(VanTeamSerializer(van).data, status=status.HTTP_200_OK)
 
 
 # ─── Van Team Members (with user limit enforcement) ───────────────────────────
 
-class VanTeamMemberListCreateView(generics.ListCreateAPIView):
+class VanTeamMemberListCreateView(DealerOwnershipMixin, generics.ListCreateAPIView):
     serializer_class = VanTeamMemberSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.check_dealer_ownership_via_team(self.kwargs["team_pk"])
         return VanTeamMember.objects.filter(team_id=self.kwargs["team_pk"])
 
     def create(self, request, *args, **kwargs):
-        dealer = Dealer.objects.get(
-            branches__van_teams__id=self.kwargs["team_pk"]
-        )
+        dealer = self.check_dealer_ownership_via_team(self.kwargs["team_pk"])
 
-        # 1. Block suspended dealers
         require_active_subscription(dealer)
-
-        # 2. Enforce user limit (members count toward user quota)
         overage_invoice = enforce_limit(dealer, "users")
 
-        # 3. Create
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         member = serializer.save(team_id=self.kwargs["team_pk"])
@@ -374,10 +432,7 @@ class VanTeamMemberListCreateView(generics.ListCreateAPIView):
                 "warning": "User limit exceeded. An overage invoice has been generated.",
             }
 
-            # ─── ADD THIS NOTIFICATION ─────────────────────────────────────────
             from apps.notifications.models import Notification
-
-            # Notify dealer owner
             if dealer.owner:
                 Notification.objects.create(
                     recipient=dealer.owner,
@@ -392,11 +447,8 @@ class VanTeamMemberListCreateView(generics.ListCreateAPIView):
                     ),
                     type=Notification.Type.ALERT,
                 )
-            # ───────────────────────────────────────────────────────────────────
 
-        # ─── ADD THIS NOTIFICATION (to the new member) ─────────────────────────
         from apps.notifications.models import Notification
-
         team = member.team
         Notification.objects.create(
             recipient=member.agent,
@@ -409,84 +461,71 @@ class VanTeamMemberListCreateView(generics.ListCreateAPIView):
             ),
             type=Notification.Type.SYSTEM,
         )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
-class VanTeamMemberDetailView(generics.RetrieveDestroyAPIView):
+class VanTeamMemberDetailView(DealerOwnershipMixin, generics.RetrieveDestroyAPIView):
     serializer_class = VanTeamMemberSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.check_dealer_ownership_via_team(self.kwargs["team_pk"])
         return VanTeamMember.objects.filter(team_id=self.kwargs["team_pk"])
 
-# ─── Van Team Activate / Deactivate ───────────────────────────────────────────
 
+# ─── MobiGo CRUD (with limit enforcement) ────────────────────────────────────
 
-class VanTeamDeactivateView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+# apps/dealers/views.py
 
-    def patch(self, request, dealer_pk, branch_pk, pk):
-        van = get_object_or_404(VanTeam, pk=pk, branch_id=branch_pk)
-        van.is_active = False
-        van.save()
-        return Response(VanTeamSerializer(van).data, status=status.HTTP_200_OK)
-
-
-class VanTeamActivateView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def patch(self, request, dealer_pk, branch_pk, pk):
-        van = get_object_or_404(VanTeam, pk=pk, branch_id=branch_pk)
-        van.is_active = True
-        van.save()
-        return Response(VanTeamSerializer(van).data, status=status.HTTP_200_OK)
-
-# ─── MobiGo CRUD (with limit enforcement) ───────────────────────────────────
-
-
-class MobiGoListCreateView(generics.ListCreateAPIView):
+class MobiGoListCreateView(DealerOwnershipMixin, generics.ListCreateAPIView):
     serializer_class = MobiGoSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None  # ← add this line
 
     def get_queryset(self):
+        self.get_dealer()
         return MobiGo.objects.filter(
             dealer_id=self.kwargs["dealer_pk"]
         ).select_related("assigned_ba").order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
-        dealer = get_object_or_404(Dealer, pk=self.kwargs["dealer_pk"])
+        dealer = self.get_dealer()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(dealer=dealer)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class MobiGoDetailView(generics.RetrieveUpdateDestroyAPIView):
+class MobiGoDetailView(DealerOwnershipMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = MobiGoSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        self.get_dealer()
         return MobiGo.objects.filter(
             dealer_id=self.kwargs["dealer_pk"]
         ).select_related("assigned_ba")
 
 
-class MobiGoDeactivateView(generics.GenericAPIView):
+# ─── MobiGo Activate / Deactivate ─────────────────────────────────────────────
+
+class MobiGoDeactivateView(DealerOwnershipMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, dealer_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
         mobigo = get_object_or_404(MobiGo, pk=pk, dealer_id=dealer_pk)
         mobigo.is_active = False
         mobigo.save()
         return Response(MobiGoSerializer(mobigo).data, status=status.HTTP_200_OK)
 
 
-class MobiGoActivateView(generics.GenericAPIView):
+class MobiGoActivateView(DealerOwnershipMixin, generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, dealer_pk, pk):
+        self.check_dealer_ownership(dealer_pk)
         mobigo = get_object_or_404(MobiGo, pk=pk, dealer_id=dealer_pk)
         mobigo.is_active = True
         mobigo.save()

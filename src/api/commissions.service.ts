@@ -7,7 +7,7 @@ import type {
   CreateCommissionCycleRequest,
   CreateCommissionRecordRequest, ApproveCommissionRequest,
   CreatePayoutRequest, CommissionRecordFilterParams,
-  DeductionRule,
+  DeductionRule, BASimBreakdownResponse
 } from "@/types/commissions.types";
 
 export const commissionsService = {
@@ -107,4 +107,7 @@ export const commissionsService = {
 
   createPayout: (data: CreatePayoutRequest) =>
     api.post<PayoutRecord>(ENDPOINTS.PAYOUTS, data).then(r => r.data),
+
+  getBASimBreakdown: (params: { ba_id: number; start_date?: string; end_date?: string }) =>
+    api.get<BASimBreakdownResponse>(ENDPOINTS.BA_SIM_BREAKDOWN, { params }).then(r => r.data),
 };

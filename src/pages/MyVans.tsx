@@ -13,6 +13,7 @@ import { useUsers, useCreateUser } from "@/hooks/useUsers";
 import { showSuccess, showError } from "@/lib/toast";
 import type { VanTeam, Branch } from "@/types/dealers.types";
 import type { UserProfile, UserRole } from "@/types/auth.types";
+import { useMobiGos, useUpdateMobiGo } from "@/hooks/useMobigo";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,6 @@ function userInitials(u: UserProfile) {
 }
 
 // ─── Create BA Dialog ─────────────────────────────────────────────────────────
-// Used by both branch_manager (picks a van) and van_team_leader (auto-assigned)
 
 function CreateBADialog({
   open,
@@ -36,8 +36,8 @@ function CreateBADialog({
   onSuccess,
   dealerId,
   branchId,
-  vans,              // vans in this branch — for branch_manager to pick from
-  autoAssignVan,     // set for van_team_leader — skips the picker
+  vans,
+  autoAssignVan,
 }: {
   open: boolean;
   onClose: () => void;
@@ -47,22 +47,27 @@ function CreateBADialog({
   vans: VanTeam[];
   autoAssignVan?: VanTeam;
 }) {
-  const [name,         setName]         = useState("");
-  const [email,        setEmail]        = useState("");
-  const [phone,        setPhone]        = useState("");
-  const [password,     setPassword]     = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [selectedVanId, setSelectedVanId] = useState<string>("");
-  const [apiError,     setApiError]     = useState("");
+  const [name,             setName]             = useState("");
+  const [email,            setEmail]            = useState("");
+  const [phone,            setPhone]            = useState("");
+  const [password,         setPassword]         = useState("");
+  const [showPassword,     setShowPassword]     = useState(false);
+  const [selectedVanId,    setSelectedVanId]    = useState<string>("");
+  const [apiError,         setApiError]         = useState("");
+  const [assignedMobigoId, setAssignedMobigoId] = useState<string>("");
 
-  const createUser = useCreateUser();
-  const addMember  = useAddVanTeamMember();
+  const { data: mobigoData } = useMobiGos(dealerId);
+  const unassignedMobigos = (mobigoData ?? []).filter(m => !m.assigned_ba && m.is_active);
+
+  const createUser   = useCreateUser();
+  const addMember    = useAddVanTeamMember();
+  const updateMobiGo = useUpdateMobiGo();
 
   if (!open) return null;
 
-  const isVanLeader  = !!autoAssignVan;
-  const targetVan    = isVanLeader ? autoAssignVan : vans.find(v => String(v.id) === selectedVanId);
-  const vanOptions   = vans.filter(v => v.is_active);
+  const isVanLeader = !!autoAssignVan;
+  const targetVan   = isVanLeader ? autoAssignVan : vans.find(v => String(v.id) === selectedVanId);
+  const vanOptions  = vans.filter(v => v.is_active);
 
   const isValid =
     name.trim().length >= 2 &&
@@ -73,6 +78,13 @@ function CreateBADialog({
 
   const loading = createUser.isPending || addMember.isPending;
 
+  const reset = () => {
+    setName(""); setEmail(""); setPhone(""); setPassword("");
+    setShowPassword(false); setSelectedVanId(""); setApiError("");
+    setAssignedMobigoId("");
+    onClose();
+  };
+
   const handleSubmit = async () => {
     if (!isValid || !targetVan) return;
     setApiError("");
@@ -82,13 +94,13 @@ function CreateBADialog({
 
     try {
       const newUser = await createUser.mutateAsync({
-        email:      email.trim(),
-        password:   password.trim(),
+        email:     email.trim(),
+        password:  password.trim(),
         first_name,
         last_name,
-        phone:      "+254" + phone.replace(/\D/g, ""),
-        role:       "brand_ambassador" as UserRole,
-        dealer_id:  dealerId,
+        phone:     "+254" + phone.replace(/\D/g, ""),
+        role:      "brand_ambassador" as UserRole,
+        dealer_id: dealerId,
       });
 
       await addMember.mutateAsync({
@@ -97,6 +109,19 @@ function CreateBADialog({
         teamId: targetVan.id,
         data:   { agent: newUser.id },
       });
+
+      // Assign MobiGo if selected — non-fatal if it fails
+      if (assignedMobigoId) {
+        try {
+          await updateMobiGo.mutateAsync({
+            dealerId,
+            mobigoId: Number(assignedMobigoId),
+            data: { assigned_ba: newUser.id },
+          });
+        } catch {
+          showError("BA created but MobiGo assignment failed. Assign it manually in Settings.");
+        }
+      }
 
       showSuccess(`${name.trim()} created and added to ${targetVan.name}`);
       reset();
@@ -113,12 +138,6 @@ function CreateBADialog({
         setApiError(e?.message ?? "Failed to create brand ambassador.");
       }
     }
-  };
-
-  const reset = () => {
-    setName(""); setEmail(""); setPhone(""); setPassword("");
-    setShowPassword(false); setSelectedVanId(""); setApiError("");
-    onClose();
   };
 
   return (
@@ -276,6 +295,33 @@ function CreateBADialog({
               </div>
             </div>
           )}
+
+          {/* MobiGo Assignment */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">MobiGo Device</p>
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1.5">
+                Assign MobiGo <span className="text-muted-foreground font-normal text-xs">(optional)</span>
+              </label>
+              <select
+                value={assignedMobigoId}
+                onChange={e => setAssignedMobigoId(e.target.value)}
+                className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">— No device yet —</option>
+                {unassignedMobigos.map(m => (
+                  <option key={m.id} value={String(m.id)}>
+                    {m.imis || m.sim_serial_number || `Device #${m.id}`}
+                  </option>
+                ))}
+              </select>
+              {unassignedMobigos.length === 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  No unassigned MobiGo devices available. Add one in Settings → MobiGo Devices.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Footer */}
@@ -301,7 +347,7 @@ function CreateBADialog({
   );
 }
 
-// ─── Add Member Dialog (assign existing BA) ───────────────────────────────────
+// ─── Add Member Dialog (kept for reference, not surfaced in UI) ───────────────
 
 function AddMemberDialog({
   open,
@@ -438,17 +484,16 @@ function VanCard({
   dealerId: number;
   branches: Branch[];
   currentUserRole: string;
-  autoAssignVan?: VanTeam;   // set when role === "van_team_leader"
-  branchVans: VanTeam[];     // all vans in branch — for branch_manager van picker
+  autoAssignVan?: VanTeam;
+  branchVans: VanTeam[];
   branchId: number;
 }) {
-  const [expanded,      setExpanded]      = useState(false);
-  const [showAddMember, setShowAddMember] = useState(false);
-  const [showCreateBA,  setShowCreateBA]  = useState(false);
-  const [editingName,   setEditingName]   = useState(false);
-  const [nameValue,     setNameValue]     = useState(van.name);
-  const [savingName,    setSavingName]    = useState(false);
-  const [removingId,    setRemovingId]    = useState<number | null>(null);
+  const [expanded,     setExpanded]     = useState(false);
+  const [showCreateBA, setShowCreateBA] = useState(false);
+  const [editingName,  setEditingName]  = useState(false);
+  const [nameValue,    setNameValue]    = useState(van.name);
+  const [savingName,   setSavingName]   = useState(false);
+  const [removingId,   setRemovingId]   = useState<number | null>(null);
 
   const removeMember  = useRemoveVanTeamMember();
   const updateVanTeam = useUpdateVanTeam();
@@ -497,37 +542,7 @@ function VanCard({
         </div>
 
         <div className="flex-1 min-w-0">
-          {editingName ? (
-            <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-              <input
-                value={nameValue}
-                onChange={e => setNameValue(e.target.value)}
-                autoFocus
-                onKeyDown={e => {
-                  if (e.key === "Enter") handleSaveName();
-                  if (e.key === "Escape") { setEditingName(false); setNameValue(van.name); }
-                }}
-                className="rounded-md border border-primary bg-accent px-2 py-1 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary w-48"
-              />
-              <button onClick={handleSaveName} disabled={savingName}
-                className="p-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50">
-                {savingName ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              </button>
-              <button onClick={() => { setEditingName(false); setNameValue(van.name); }}
-                className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <p className="font-semibold text-foreground truncate">{van.name}</p>
-              <button onClick={e => { e.stopPropagation(); setEditingName(true); }}
-                className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors opacity-0 group-hover:opacity-100"
-                title="Edit van name">
-                <Edit2 className="h-3 w-3" />
-              </button>
-            </div>
-          )}
+          <p className="font-semibold text-foreground truncate">{van.name}</p>
           <div className="flex items-center gap-2 mt-0.5">
             <Building2 className="h-3 w-3 text-muted-foreground" />
             <p className="text-xs text-muted-foreground">{branchName}</p>
@@ -575,15 +590,7 @@ function VanCard({
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Brand Ambassadors ({memberCount})
             </p>
-            {/* Action buttons */}
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowAddMember(true)}
-                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              >
-                <Search className="h-3.5 w-3.5" />
-                Assign Existing
-              </button>
               <button
                 onClick={() => setShowCreateBA(true)}
                 className="flex items-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
@@ -599,13 +606,9 @@ function VanCard({
             <div className="rounded-lg border border-dashed border-border py-8 text-center">
               <Users className="h-6 w-6 text-muted-foreground mx-auto mb-2" />
               <p className="text-sm text-muted-foreground">No brand ambassadors yet.</p>
-              <div className="flex items-center justify-center gap-3 mt-2">
+              <div className="flex items-center justify-center mt-2">
                 <button onClick={() => setShowCreateBA(true)} className="text-xs text-primary underline">
                   Create new BA
-                </button>
-                <span className="text-muted-foreground/40 text-xs">or</span>
-                <button onClick={() => setShowAddMember(true)} className="text-xs text-primary underline">
-                  assign existing
                 </button>
               </div>
             </div>
@@ -671,10 +674,36 @@ function VanCard({
           )}
 
           {/* Rename shortcut */}
-          {!editingName && (
+          {editingName ? (
+            <div className="pt-2 border-t border-border/50 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+              <input
+                value={nameValue}
+                onChange={e => setNameValue(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleSaveName(); if (e.key === "Escape") { setEditingName(false); setNameValue(van.name); } }}
+                autoFocus
+                className="flex-1 rounded-md border border-border bg-accent py-1.5 px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                onClick={handleSaveName}
+                disabled={savingName}
+                className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+              >
+                {savingName ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                Save
+              </button>
+              <button
+                onClick={() => { setEditingName(false); setNameValue(van.name); }}
+                className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
             <div className="pt-2 border-t border-border/50 flex justify-end">
-              <button onClick={() => setEditingName(true)}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              <button
+                onClick={() => setEditingName(true)}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
                 <Edit2 className="h-3 w-3" />
                 Rename van
               </button>
@@ -682,15 +711,6 @@ function VanCard({
           )}
         </div>
       )}
-
-      {/* Assign existing BA dialog */}
-      <AddMemberDialog
-        open={showAddMember}
-        van={van}
-        dealerId={dealerId}
-        onClose={() => setShowAddMember(false)}
-        onSuccess={() => setShowAddMember(false)}
-      />
 
       {/* Create new BA dialog */}
       <CreateBADialog
@@ -731,9 +751,7 @@ export default function MyVans() {
   const myBranch     = branches.find(b => b.id === branchId);
   const totalMembers = (vanTeams ?? []).reduce((sum, v) => sum + (v.members?.length ?? 0), 0);
 
-  // For van_team_leader — find their own van to pass as autoAssignVan
-  const ownVan = vanTeamId ? (vanTeams ?? []).find(v => v.id === vanTeamId) : undefined;
-
+  const ownVan     = vanTeamId ? (vanTeams ?? []).find(v => v.id === vanTeamId) : undefined;
   const isVanLeader = user?.role === "van_team_leader";
 
   return (
@@ -811,7 +829,6 @@ export default function MyVans() {
                 branchId={branchId!}
                 branchVans={vanTeams ?? []}
                 currentUserRole={user?.role ?? ""}
-                // For van_team_leader: only pass autoAssignVan on their own van card
                 autoAssignVan={isVanLeader && ownVan?.id === van.id ? ownVan : undefined}
               />
             </div>

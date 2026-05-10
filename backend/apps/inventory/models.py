@@ -25,6 +25,8 @@ class SIM(models.Model):
         ACTIVATED = "activated",     "Activated"
         RETURNED = "returned",      "Returned"
         FRAUD_FLAGGED = "fraud_flagged", "Fraud Flagged"
+        LOST = "lost",         "Lost"
+        FAULTY = "faulty",       "Faulty"
         REPLACED = "replaced",      "Replaced"
 
     serial_number = models.CharField(max_length=50, unique=True)
@@ -54,6 +56,8 @@ class SIMMovement(models.Model):
         FLAG = "flag",     "Fraud Flagged"
         REPLACE = "replace",  "Replaced"
         REGISTER = "register", "Registered"
+        LOST = "lost",     "Lost / Missing"
+        FAULTY = "faulty",   "Faulty SIM Reported"
 
     sim = models.ForeignKey(
         SIM, on_delete=models.CASCADE, related_name="movements")

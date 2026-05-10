@@ -188,3 +188,12 @@ export function useDeleteDeductionRule() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["deduction-rules"] }),
   });
 }
+
+export function useBASimBreakdown(params: { ba_id: number; start_date?: string; end_date?: string } | null) {
+  return useQuery({
+    queryKey: ["baSimBreakdown", params],
+    queryFn: () => commissionsService.getBASimBreakdown(params!),
+    enabled: !!params?.ba_id,
+    staleTime: 30_000,
+  });
+}

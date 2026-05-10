@@ -142,3 +142,27 @@ export interface DeductionRule {
   is_active:       boolean;
   created_at:      string;
 }
+
+export interface BASimRow {
+  serial_number:    string;
+  current_status:   string;
+  recon_result:     string;
+  verdict:          string;
+  commission_amount: number;
+  fraud_flag:       boolean;
+  ba_msisdn:        string | null;
+  topup_amount:     number;
+  issued_at:        string;
+}
+
+export interface BASimBreakdownResponse {
+  ba_id:            number;
+  ba_name:          string;
+  total_issued:     number;
+  confirmed:        number;
+  not_in_report:    number;
+  rejected:         number;
+  fraud_flagged:    number;
+  total_commission: number;
+  sims:             BASimRow[];
+}

@@ -23,6 +23,7 @@ const roleLabels: Record<UserRole, string> = {
   van_team_leader:     "Van Team Leader",
   brand_ambassador:    "Brand Ambassador",
   finance:             "Finance Admin",
+  external_agent:      "External Agent",
 };
 
 const roleColors: Record<UserRole, string> = {
@@ -33,6 +34,7 @@ const roleColors: Record<UserRole, string> = {
   van_team_leader:    "bg-green-500/15 text-green-500",
   brand_ambassador:   "bg-pink-500/15 text-pink-400",
   finance:            "bg-teal-500/15 text-teal-400",
+  external_agent:     "bg-orange-500/15 text-orange-400",
 };
 
 const inputCls =
@@ -550,7 +552,7 @@ function UserDrawer({ user, onClose }: { user: UserProfile | null; onClose: () =
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function UsersPage() {
+export default function UsersPage({ dealerId }: { dealerId?: number } = {}) {
   const [search, setSearch]             = useState("");
   const [roleFilter, setRoleFilter]     = useState<UserRole | "all">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
@@ -562,9 +564,10 @@ export default function UsersPage() {
     type: "deactivate" | "activate" | "delete"; user: UserProfile;
   } | null>(null);
 
-  const { data, isLoading, error: queryError } = useUsers(
-    roleFilter !== "all" ? { role: roleFilter } : undefined,
-  );
+  const { data, isLoading, error: queryError } = useUsers({
+    ...(roleFilter !== "all" ? { role: roleFilter } : {}),
+    ...(dealerId ? { dealer_id: dealerId } : {}),
+  });
 
   const deactivateUser = useDeactivateUser();
   const activateUser   = useActivateUser();
@@ -624,7 +627,7 @@ export default function UsersPage() {
         <div>
           <h1 className="font-heading text-2xl font-bold text-foreground">Users</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {totalUsers} registered users across all dealers
+            {totalUsers} registered users{dealerId ? " for this dealer" : " across all dealers"}
           </p>
         </div>
         <button onClick={() => setShowCreate(true)}

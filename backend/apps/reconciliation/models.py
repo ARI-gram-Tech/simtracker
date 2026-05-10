@@ -27,6 +27,9 @@ class SafaricomReport(models.Model):
     branch = models.ForeignKey(
         Branch, on_delete=models.SET_NULL,
         null=True, blank=True, related_name="safaricom_reports")
+    dealer = models.ForeignKey(
+        "dealers.Dealer", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="safaricom_reports")
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING)
 

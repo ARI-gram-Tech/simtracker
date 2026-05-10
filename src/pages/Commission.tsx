@@ -2,7 +2,7 @@
 // Full commission management page: Rules (read), Cycles, Records, Payouts
 // Role-gated: BA gets personal view, Van/Branch get scoped records, Owner/Finance/Ops get full access
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -21,14 +21,15 @@ import {
   usePayouts,
   useCreatePayout,
   useDeductionRules,
+  useBASimBreakdown,
 } from "@/hooks/useCommissions";
-import type { CommissionCycle, CommissionRecord } from "@/types/commissions.types";
+import type { CommissionCycle, CommissionRecord, BASimBreakdownResponse, BASimRow } from "@/types/commissions.types";
 import {
   Loader2, AlertCircle, Plus, X, DollarSign,
   CheckCircle2, XCircle, Clock, CreditCard,
   Lock, Banknote, Smartphone,
   Calendar, TrendingUp, BarChart3,
-  RefreshCw,
+  RefreshCw, AlertTriangle, Search,
 } from "lucide-react";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -573,12 +574,14 @@ function BreakdownModal({ record, onClose }: { record: CommissionRecord | null; 
 function RecordsTab({
   dealerId,
   canApprove,
+  canViewSIMDetail,
   scopeRole,
   scopeBranchId,
   scopeVanId,
 }: {
   dealerId: number;
   canApprove: boolean;
+  canViewSIMDetail: boolean;
   scopeRole?: string;
   scopeBranchId?: number;
   scopeVanId?: number;
@@ -588,7 +591,10 @@ function RecordsTab({
   const [actionRecord,    setActionRecord]    = useState<CommissionRecord | null>(null);
   const [actionType,      setActionType]      = useState<"approve" | "reject" | null>(null);
   const [payoutRecord,    setPayoutRecord]    = useState<CommissionRecord | null>(null);
-  const [breakdownRecord, setBreakdownRecord] = useState<CommissionRecord | null>(null);
+  const [breakdownRecord,  setBreakdownRecord]  = useState<CommissionRecord | null>(null);
+  const [simBreakdownTarget, setSimBreakdownTarget] = useState<{
+    baId: number; baName: string; startDate?: string; endDate?: string;
+  } | null>(null);
 
   // Scoped roles see filtered records, no dropdowns needed
   const isScoped = scopeRole === "branch_manager" || scopeRole === "van_team_leader";
@@ -712,6 +718,21 @@ function RecordsTab({
                             className="rounded-md bg-accent border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
                             Details
                           </button>
+                          {canViewSIMDetail && (
+                            <button
+                              onClick={() => {
+                                const cycle = cycles.find(c => c.id === r.cycle);
+                                setSimBreakdownTarget({
+                                  baId:      r.agent,
+                                  baName:    r.agent_name,
+                                  startDate: cycle?.start_date,
+                                  endDate:   cycle?.end_date,
+                                });
+                              }}
+                              className="rounded-md bg-accent border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
+                              SIM Detail
+                            </button>
+                          )}
                           {r.status === "pending" && (
                             <>
                               <button
@@ -751,6 +772,15 @@ function RecordsTab({
       />
       <PayoutDialog   record={payoutRecord}    onClose={() => setPayoutRecord(null)} />
       <BreakdownModal record={breakdownRecord} onClose={() => setBreakdownRecord(null)} />
+      {simBreakdownTarget && (
+        <BASimBreakdownModal
+          baId={simBreakdownTarget.baId}
+          baName={simBreakdownTarget.baName}
+          startDate={simBreakdownTarget.startDate}
+          endDate={simBreakdownTarget.endDate}
+          onClose={() => setSimBreakdownTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1329,6 +1359,203 @@ const ALL_TABS = [
   { id: "deductions", label: "Deductions", icon: AlertCircle, roles: ["dealer_owner", "operations_manager", "finance"] },
 ];
 
+// ─── BA SIM Breakdown Modal ───────────────────────────────────────────────────
+
+const RECON_COLORS: Record<string, string> = {
+  payable:       "bg-green-500/10 text-green-500 border-green-500/20",
+  rejected:      "bg-red-500/10 text-red-400 border-red-500/20",
+  fraud:         "bg-orange-500/10 text-orange-400 border-orange-500/20",
+  dispute:       "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
+  not_in_report: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+  ghost_sim:     "bg-purple-500/10 text-purple-400 border-purple-500/20",
+};
+
+const SIM_STATUS_COLORS: Record<string, string> = {
+  in_stock:      "text-blue-400",
+  issued:        "text-amber-500",
+  registered:    "text-green-500",
+  activated:     "text-emerald-400",
+  returned:      "text-purple-400",
+  fraud_flagged: "text-destructive",
+  lost:          "text-orange-400",
+  faulty:        "text-yellow-400",
+  replaced:      "text-muted-foreground",
+};
+
+function BASimBreakdownModal({
+  baId, baName, startDate, endDate, onClose,
+}: {
+  baId: number; baName: string;
+  startDate?: string; endDate?: string;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filterResult, setFilterResult] = useState("");
+
+  const { data, isLoading, isError } = useBASimBreakdown({
+    ba_id: baId,
+    start_date: startDate,
+    end_date: endDate,
+  });
+
+  const rows = useMemo(() => {
+    if (!data?.sims) return [];
+    return data.sims.filter(r => {
+      const matchSearch = !search || r.serial_number.includes(search);
+      const matchFilter = !filterResult || r.recon_result === filterResult;
+      return matchSearch && matchFilter;
+    });
+  }, [data, search, filterResult]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-background/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-4xl rounded-xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]">
+
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-6 py-4 shrink-0">
+          <div>
+            <h3 className="font-heading text-lg font-semibold text-foreground">
+              SIM Accountability — {baName}
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Every SIM issued to this BA cross-referenced with Safaricom's report
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* KPI strip */}
+        {data && (
+          <div className="grid grid-cols-5 gap-0 border-b border-border shrink-0">
+            {[
+              { label: "Total Issued",    value: data.total_issued,  color: "text-foreground"  },
+              { label: "Confirmed ✅",    value: data.confirmed,     color: "text-green-500"   },
+              { label: "Missing 🔍",      value: data.not_in_report, color: "text-amber-500"   },
+              { label: "Rejected ❌",     value: data.rejected,      color: "text-destructive" },
+              { label: "Commission",      value: `KES ${data.total_commission.toLocaleString()}`, color: "text-primary" },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="px-4 py-3 border-r border-border last:border-r-0 text-center">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className={cn("text-lg font-bold font-heading mt-0.5", color)}>{value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Missing SIMs alert */}
+        {data && data.not_in_report > 0 && (
+          <div className="mx-6 mt-4 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 shrink-0">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-500">
+              <span className="font-semibold">{data.not_in_report} SIM(s)</span> were issued to {baName} but
+              do not appear in any Safaricom report. {baName} cannot be paid commission for these —
+              they must be returned, marked lost, or escalated.
+            </p>
+          </div>
+        )}
+
+        {/* Filters */}
+        <div className="flex gap-3 px-6 py-3 shrink-0">
+          <div className="relative flex-1 max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search serial…"
+              className="w-full rounded-md border border-border bg-accent py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <select value={filterResult} onChange={e => setFilterResult(e.target.value)}
+            className="rounded-md border border-border bg-accent px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
+            <option value="">All Results</option>
+            <option value="not_in_report">Not in Report</option>
+            <option value="payable">Payable</option>
+            <option value="rejected">Rejected</option>
+            <option value="fraud">Fraud</option>
+            <option value="dispute">Disputed</option>
+          </select>
+          <p className="text-xs text-muted-foreground self-center ml-auto">
+            {rows.length} SIM{rows.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+
+        {/* Table */}
+        <div className="flex-1 overflow-y-auto px-6 pb-6">
+          {isLoading && (
+            <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span className="text-sm">Loading SIM data…</span>
+            </div>
+          )}
+          {isError && (
+            <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive mt-4">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              Failed to load SIM breakdown.
+            </div>
+          )}
+          {!isLoading && !isError && (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-muted-foreground text-xs">
+                  <th className="pb-3 px-2 text-left font-medium">Serial Number</th>
+                  <th className="pb-3 px-2 text-left font-medium">Issued At</th>
+                  <th className="pb-3 px-2 text-left font-medium">Inventory Status</th>
+                  <th className="pb-3 px-2 text-left font-medium">Safaricom Result</th>
+                  <th className="pb-3 px-2 text-right font-medium">Commission</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
+                      No SIMs match your filter.
+                    </td>
+                  </tr>
+                ) : rows.map(row => (
+                  <tr key={row.serial_number}
+                    className={cn(
+                      "border-b border-border/50 transition-colors hover:bg-accent/40",
+                      row.recon_result === "not_in_report" && "border-l-2 border-l-amber-500"
+                    )}>
+                    <td className="py-3 px-2">
+                      <span className="font-mono text-xs text-primary">{row.serial_number}</span>
+                    </td>
+                    <td className="py-3 px-2 text-xs text-muted-foreground">
+                      {new Date(row.issued_at).toLocaleDateString("en-KE", {
+                        day: "numeric", month: "short", year: "numeric",
+                      })}
+                    </td>
+                    <td className="py-3 px-2">
+                      <span className={cn("text-xs font-medium capitalize",
+                        SIM_STATUS_COLORS[row.current_status] ?? "text-muted-foreground")}>
+                        {row.current_status.replace(/_/g, " ")}
+                      </span>
+                    </td>
+                    <td className="py-3 px-2">
+                      <span className={cn(
+                        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                        RECON_COLORS[row.recon_result] ?? "bg-accent text-muted-foreground border-border"
+                      )}>
+                        {row.verdict}
+                      </span>
+                    </td>
+                    <td className="py-3 px-2 text-right text-xs">
+                      {row.commission_amount > 0
+                        ? <span className="text-green-500 font-medium">KES {row.commission_amount.toLocaleString()}</span>
+                        : <span className="text-muted-foreground">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Commission Page ──────────────────────────────────────────────────────
 
 export default function Commission() {
@@ -1338,6 +1565,7 @@ export default function Commission() {
 
   const canManageCycles = role === "dealer_owner" || role === "operations_manager";
   const canApprove      = role === "dealer_owner" || role === "finance";
+  const canViewSIMDetail = role === "dealer_owner" || role === "finance" || role === "operations_manager";
 
   // Filter tabs to only those the current role can see
   const tabs = ALL_TABS.filter(t => t.roles.includes(role ?? ""));
@@ -1410,6 +1638,7 @@ export default function Commission() {
           <RecordsTab
             dealerId={dealerId}
             canApprove={canApprove}
+            canViewSIMDetail={canViewSIMDetail}
             scopeRole={role}
             scopeBranchId={user?.branch_id ? Number(user.branch_id) : undefined}
             scopeVanId={user?.van_team_id  ? Number(user.van_team_id)  : undefined}

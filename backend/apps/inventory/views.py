@@ -1,6 +1,7 @@
 # inventory/views.py
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import generics, status, permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
@@ -15,20 +16,99 @@ from .serializers import (
     BulkReturnSerializer,
 )
 from apps.accounts.models import User
-from apps.dealers.models import Branch, VanTeam
+from apps.dealers.models import Branch, VanTeam, Dealer
 
+
+# ─── Dealer Resolution Helper ─────────────────────────────────────────────────
+
+def _get_user_dealer(user):
+    """
+    Returns the dealer the logged-in user belongs to.
+    Returns None for staff/admin — they see everything.
+    """
+    if user.is_staff:
+        return None
+
+    # Dealer owner
+    try:
+        return user.dealer
+    except Dealer.DoesNotExist:
+        pass
+
+    # Everyone else — dealer_org FK
+    if getattr(user, "dealer_org_id", None):
+        return user.dealer_org
+
+    # Branch manager
+    branch = Branch.objects.filter(manager=user).first()
+    if branch:
+        return branch.dealer
+
+    # Van team leader
+    team = VanTeam.objects.filter(leader=user).first()
+    if team:
+        return team.branch.dealer
+
+    # Van team member
+    from apps.dealers.models import VanTeamMember
+    member = VanTeamMember.objects.filter(agent=user).first()
+    if member:
+        return member.team.branch.dealer
+
+    return None
+
+
+def _dealer_sim_qs(user):
+    """Base SIM queryset scoped to the user's dealer."""
+    dealer = _get_user_dealer(user)
+    if dealer is None:
+        return SIM.objects.all()
+    return SIM.objects.filter(
+        models.Q(branch__dealer=dealer) |
+        models.Q(batch__branch__dealer=dealer)
+    ).distinct()
+
+
+def _dealer_batch_qs(user):
+    """Base SIMBatch queryset scoped to the user's dealer."""
+    dealer = _get_user_dealer(user)
+    if dealer is None:
+        return SIMBatch.objects.all()
+    return SIMBatch.objects.filter(branch__dealer=dealer)
+
+
+def _dealer_movement_qs(user):
+    """Base SIMMovement queryset scoped to the user's dealer."""
+    dealer = _get_user_dealer(user)
+    if dealer is None:
+        return SIMMovement.objects.all()
+    return SIMMovement.objects.filter(
+        models.Q(sim__branch__dealer=dealer) |
+        models.Q(from_branch__dealer=dealer)
+    ).distinct()
+
+
+# ─── Role Check ───────────────────────────────────────────────────────────────
+
+EDIT_DELETE_ROLES = {"dealer_owner", "operations_manager", "super_admin"}
+
+
+def can_edit_delete(user):
+    return getattr(user, "role", None) in EDIT_DELETE_ROLES
+
+
+# ─── SIM Batch Views ──────────────────────────────────────────────────────────
 
 class SIMBatchListCreateView(generics.ListCreateAPIView):
     serializer_class = SIMBatchSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return SIMBatch.objects.all()
+        return _dealer_batch_qs(self.request.user)
 
     def perform_create(self, serializer):
         batch = serializer.save(received_by=self.request.user)
 
-        # Auto-generate SIM records from the serial range
         serial_start = self.request.data.get("serial_start")
         serial_end = self.request.data.get("serial_end")
 
@@ -53,22 +133,47 @@ class SIMBatchListCreateView(generics.ListCreateAPIView):
 class SIMBatchDetailView(generics.RetrieveUpdateAPIView):
     serializer_class = SIMBatchSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = SIMBatch.objects.all()
 
+    def get_queryset(self):
+        return _dealer_batch_qs(self.request.user)
+
+
+# ─── SIM Views ────────────────────────────────────────────────────────────────
 
 class SIMListView(generics.ListAPIView):
     serializer_class = SIMSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs = SIM.objects.all().order_by("-created_at")
-        status = self.request.query_params.get("status")
+        qs = _dealer_sim_qs(self.request.user).order_by("-created_at")
+
+        sim_status = self.request.query_params.get("status")
         branch = self.request.query_params.get("branch")
         holder = self.request.query_params.get("holder")
         search = self.request.query_params.get("search")
-        van_team = self.request.query_params.get("van_team")
-        if status:
-            qs = qs.filter(status=status)
+        van_team = self.request.query_params.get("van_team")   # ← parse first
+
+        if sim_status:
+            if sim_status == "in_stock":
+                if van_team and van_team != "-1":
+                    qs = qs.filter(status=sim_status)
+                else:
+                    qs = qs.filter(status=sim_status, van_team__isnull=True)
+            elif sim_status == "issued":
+                if van_team and van_team != "-1":
+                    # Van context: only BA-held SIMs
+                    qs = qs.filter(status=SIM.Status.ISSUED,
+                                   current_holder__isnull=False)
+                else:
+                    # Dealer/branch context: BA-held + van stock
+                    qs = qs.filter(
+                        models.Q(status=SIM.Status.ISSUED) |
+                        models.Q(status=SIM.Status.IN_STOCK,
+                                 van_team__isnull=False)
+                    )
+            else:
+                qs = qs.filter(status=sim_status)
+
         if branch:
             qs = qs.filter(branch_id=branch)
         if holder:
@@ -80,7 +185,6 @@ class SIMListView(generics.ListAPIView):
                 qs = qs.none()
             else:
                 from apps.dealers.models import VanTeamMember
-                # Members of this van team — their issued SIMs should also appear
                 member_ids = list(VanTeamMember.objects.filter(
                     team_id=van_team
                 ).values_list("agent_id", flat=True))
@@ -91,21 +195,15 @@ class SIMListView(generics.ListAPIView):
         return qs
 
 
-EDIT_DELETE_ROLES = {"dealer_owner", "operations_manager", "super_admin"}
-
-
-def can_edit_delete(user):
-    return getattr(user, "role", None) in EDIT_DELETE_ROLES
-
-
 class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SIMSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = SIM.objects.all()
     lookup_field = "serial_number"
 
+    def get_queryset(self):
+        return _dealer_sim_qs(self.request.user)
+
     def update(self, request, *args, **kwargs):
-        """PATCH — allow editing branch, holder, notes/batch info only."""
         if not can_edit_delete(request.user):
             return Response(
                 {"detail": "You do not have permission to edit SIMs."},
@@ -115,7 +213,6 @@ class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
         partial = kwargs.pop("partial", True)
         instance = self.get_object()
 
-        # Track changes before update
         old_holder = instance.current_holder
         old_branch = instance.branch
 
@@ -132,7 +229,6 @@ class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
         serializer.is_valid(raise_exception=True)
         sim = serializer.save()
 
-        # Log a movement for audit trail
         SIMMovement.objects.create(
             sim=sim,
             movement_type=SIMMovement.MovementType.TRANSFER,
@@ -142,11 +238,9 @@ class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
             created_by=request.user,
         )
 
-        # ─── ADD THIS NOTIFICATION (if holder changed) ─────────────────────────
-        if 'current_holder' in data and old_holder != sim.current_holder:
+        if "current_holder" in data and old_holder != sim.current_holder:
             from apps.notifications.models import Notification
 
-            # Notify old holder (if exists)
             if old_holder:
                 Notification.objects.create(
                     recipient=old_holder,
@@ -161,7 +255,6 @@ class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
                     type=Notification.Type.SYSTEM,
                 )
 
-            # Notify new holder (if exists and different from old)
             if sim.current_holder and (not old_holder or old_holder.id != sim.current_holder.id):
                 Notification.objects.create(
                     recipient=sim.current_holder,
@@ -175,19 +268,17 @@ class SIMDetailView(generics.RetrieveUpdateDestroyAPIView):
                     ),
                     type=Notification.Type.SYSTEM,
                 )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response(serializer.data)
 
 
-# ── Add this new view at the bottom of views.py ──────────────────────────────
+# ─── Bulk Delete ──────────────────────────────────────────────────────────────
 
 class BulkDeleteSIMsView(APIView):
     """
     DELETE /inventory/actions/bulk-delete/
     Body: { "serial_numbers": ["...", "..."] }
-    Permanently deletes the listed SIMs.
-    Restricted to dealer_owner, operations_manager, super_admin.
+    Permanently deletes the listed SIMs — scoped to the dealer.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -205,7 +296,9 @@ class BulkDeleteSIMsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        qs = SIM.objects.filter(serial_number__in=serial_numbers)
+        # Scoped to dealer — can't delete another dealer's SIMs
+        qs = _dealer_sim_qs(request.user).filter(
+            serial_number__in=serial_numbers)
         found_count = qs.count()
 
         if found_count == 0:
@@ -225,16 +318,17 @@ class BulkDeleteSIMsView(APIView):
         )
 
 
+# ─── SIM Movement Views ───────────────────────────────────────────────────────
+
 class SIMMovementListView(generics.ListAPIView):
     serializer_class = SIMMovementSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = None
 
     def get_queryset(self):
-        # ── Filter to this specific SIM only ──────────────────────────────────
         serial_number = self.kwargs.get("serial_number")
 
-        qs = SIMMovement.objects.select_related(
+        qs = _dealer_movement_qs(self.request.user).select_related(
             "sim", "from_user", "to_user", "from_branch", "to_branch", "created_by"
         ).order_by("-created_at")
 
@@ -261,6 +355,43 @@ class SIMMovementListView(generics.ListAPIView):
         return qs
 
 
+class SIMMovementBulkListView(generics.ListAPIView):
+    serializer_class = SIMMovementSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None  # ← disable pagination entirely for this view
+
+    def get_queryset(self):
+        qs = _dealer_movement_qs(self.request.user).select_related(
+            "sim", "from_user", "to_user", "from_branch", "to_branch", "created_by"
+        ).order_by("-created_at")
+
+        movement_type = self.request.query_params.get("movement_type")
+        date = self.request.query_params.get("date")
+        branch = self.request.query_params.get("branch")          # ← add this
+        from_branch = self.request.query_params.get("from_branch")
+        from_user = self.request.query_params.get("from_user")
+        created_by = self.request.query_params.get("created_by")
+
+        if movement_type:
+            qs = qs.filter(movement_type=movement_type)
+        if date:
+            qs = qs.filter(created_at__date=date)
+        if branch:                                                 # ← add this
+            qs = qs.filter(
+                models.Q(from_branch_id=branch) | models.Q(to_branch_id=branch)
+            )
+        if from_branch:
+            qs = qs.filter(from_branch_id=from_branch)
+        if from_user:
+            qs = qs.filter(from_user_id=from_user)
+        if created_by:
+            qs = qs.filter(created_by_id=created_by)
+
+        return qs
+
+# ─── Bulk Issue ───────────────────────────────────────────────────────────────
+
+
 class BulkIssueView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -269,7 +400,9 @@ class BulkIssueView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        # ── Validate optional recipient user ──────────────────────────────────
+        dealer = _get_user_dealer(request.user)
+
+        # ── Validate recipient user belongs to same dealer ────────────────────
         to_user = None
         to_user_id = data.get("to_user")
         if to_user_id:
@@ -280,8 +413,14 @@ class BulkIssueView(APIView):
                     {"detail": f"User with id={to_user_id} does not exist."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            # Ensure to_user belongs to the same dealer
+            if dealer and _get_user_dealer(to_user) != dealer:
+                return Response(
+                    {"detail": "You cannot issue SIMs to a user outside your dealer account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # ── Validate optional branch ──────────────────────────────────────────
+        # ── Validate branch belongs to same dealer ────────────────────────────
         to_branch = None
         if data.get("to_branch"):
             try:
@@ -291,8 +430,13 @@ class BulkIssueView(APIView):
                     {"detail": f"Branch with id={data['to_branch']} does not exist."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if dealer and to_branch.dealer != dealer:
+                return Response(
+                    {"detail": "You cannot issue SIMs to a branch outside your dealer account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # ── Validate optional van team ────────────────────────────────────────
+        # ── Validate van team belongs to same dealer ──────────────────────────
         van_team = None
         if data.get("van_team"):
             try:
@@ -302,9 +446,14 @@ class BulkIssueView(APIView):
                     {"detail": f"VanTeam with id={data['van_team']} does not exist."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if dealer and van_team.branch.dealer != dealer:
+                return Response(
+                    {"detail": "You cannot issue SIMs to a van team outside your dealer account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # ── Fetch the SIMs ────────────────────────────────────────────────────
-        sims = SIM.objects.filter(
+        # ── Fetch the SIMs — scoped to dealer ─────────────────────────────────
+        sims = _dealer_sim_qs(request.user).filter(
             serial_number__in=data["serial_numbers"],
             status=SIM.Status.IN_STOCK,
         )
@@ -316,10 +465,14 @@ class BulkIssueView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── Determine the new status ──────────────────────────────────────────
-        new_status = SIM.Status.ISSUED if to_user else SIM.Status.IN_STOCK
+        if to_user:
+            new_status = SIM.Status.ISSUED   # BA holds it → ISSUED
+        elif van_team:
+            # van owns it → IN_STOCK (van's stock)
+            new_status = SIM.Status.IN_STOCK
+        else:
+            new_status = SIM.Status.IN_STOCK
 
-        # ── Issue the SIMs ────────────────────────────────────────────────────
         movements = []
         for sim in sims:
             from_branch = sim.branch
@@ -330,7 +483,7 @@ class BulkIssueView(APIView):
                 sim.branch = to_branch
             elif van_team:
                 sim.branch = van_team.branch
-            sim.van_team = van_team if (van_team and not to_user) else None
+            sim.van_team = van_team if van_team else None
             sim.save()
 
             movements.append(SIMMovement(
@@ -347,7 +500,6 @@ class BulkIssueView(APIView):
 
         SIMMovement.objects.bulk_create(movements)
 
-        # ─── ADD THIS NOTIFICATION (if issued to a specific user) ─────────────
         if to_user:
             from apps.notifications.models import Notification
             sim_count = sims.count()
@@ -366,7 +518,106 @@ class BulkIssueView(APIView):
                 ),
                 type=Notification.Type.ISSUE,
             )
-        # ───────────────────────────────────────────────────────────────────────
+
+            # ── 2nd-issue check: does this BA still have unresolved ISSUED SIMs? ──
+            from django.utils import timezone
+            unresolved = SIM.objects.filter(
+                current_holder=to_user,
+                status=SIM.Status.ISSUED,
+            ).exclude(
+                # exclude the ones we just issued
+                serial_number__in=data["serial_numbers"]
+            )
+
+            if unresolved.exists():
+                unresolved_count = unresolved.count()
+                unresolved_serials = ", ".join(
+                    list(unresolved.values_list(
+                        "serial_number", flat=True)[:5])
+                )
+                if unresolved_count > 5:
+                    unresolved_serials += f" and {unresolved_count - 5} more"
+
+                # Find the oldest unresolved issue movement for timestamp
+                oldest_issue = SIMMovement.objects.filter(
+                    sim__in=unresolved,
+                    movement_type=SIMMovement.MovementType.ISSUE,
+                ).order_by("created_at").first()
+
+                issued_at_str = (
+                    oldest_issue.created_at.strftime("%d %b %Y %I:%M %p")
+                    if oldest_issue else "earlier"
+                )
+
+                alert_message = (
+                    f"⚠️ ATTENTION: You are issuing {sim_count} SIM(s) to {to_user.full_name}, "
+                    f"but they still have {unresolved_count} unresolved SIM(s) from {issued_at_str} "
+                    f"that have NOT been registered.\n\n"
+                    f"Unresolved serials: {unresolved_serials}\n\n"
+                    f"BA: {to_user.full_name}\n"
+                    f"Issued by: {request.user.full_name}\n\n"
+                    f"Please resolve the previous issue before continuing.\n"
+                    f"Actions available:\n"
+                    f"• Register them on behalf of BA\n"
+                    f"• Mark as Lost (with reason)\n"
+                    f"• Return them from BA"
+                )
+
+                # Find van team leader of this BA
+                from apps.dealers.models import VanTeamMember
+                van_membership = VanTeamMember.objects.filter(
+                    agent=to_user
+                ).select_related("team__leader", "team__branch__manager").first()
+
+                recipients_to_alert = []
+
+                if van_membership:
+                    if van_membership.team.leader:
+                        recipients_to_alert.append(van_membership.team.leader)
+                    if van_membership.team.branch and van_membership.team.branch.manager:
+                        recipients_to_alert.append(
+                            van_membership.team.branch.manager)
+
+                # Also alert dealer owner/ops manager
+                if dealer:
+                    from apps.accounts.models import User as UserModel
+                    for mgr in UserModel.objects.filter(
+                        role__in=["dealer_owner", "operations_manager"],
+                        dealer_org=dealer,
+                        is_active=True,
+                    ):
+                        if mgr not in recipients_to_alert:
+                            recipients_to_alert.append(mgr)
+
+                for recipient in recipients_to_alert:
+                    Notification.objects.create(
+                        recipient=recipient,
+                        title=f"⚠️ Unresolved SIMs — {to_user.full_name}",
+                        message=alert_message,
+                        type=Notification.Type.ALERT,
+                        # Store BA id and unresolved serial numbers for action buttons
+                        # The frontend will use these to show Register/Lost/Return buttons
+                    )
+
+                # Also store the alert context in response so frontend can show the popup
+                return Response(
+                    {
+                        "issued": sims.count(),
+                        "detail": f"{sims.count()} SIMs issued successfully.",
+                        "new_status": new_status,
+                        "unresolved_alert": {
+                            "ba_id": to_user.id,
+                            "ba_name": to_user.full_name,
+                            "unresolved_count": unresolved_count,
+                            "unresolved_serials": list(
+                                unresolved.values_list(
+                                    "serial_number", flat=True)
+                            ),
+                            "issued_at": issued_at_str,
+                        }
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
         return Response(
             {
@@ -378,6 +629,8 @@ class BulkIssueView(APIView):
         )
 
 
+# ─── Bulk Return ──────────────────────────────────────────────────────────────
+
 class BulkReturnView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -385,6 +638,8 @@ class BulkReturnView(APIView):
         serializer = BulkReturnSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        dealer = _get_user_dealer(request.user)
 
         from_user = None
         from_user_id = data.get("from_user")
@@ -395,6 +650,12 @@ class BulkReturnView(APIView):
                 return Response(
                     {"detail": f"User with id={from_user_id} does not exist."},
                     status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Ensure from_user belongs to the same dealer
+            if dealer and _get_user_dealer(from_user) != dealer:
+                return Response(
+                    {"detail": "You cannot return SIMs from a user outside your dealer account."},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
         from_branch_id = data.get("from_branch")
@@ -410,6 +671,11 @@ class BulkReturnView(APIView):
                     {"detail": f"VanTeam with id={van_team_id} does not exist."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if dealer and returning_van.branch.dealer != dealer:
+                return Response(
+                    {"detail": "You cannot return SIMs from a van team outside your dealer account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         q = models.Q(pk__in=[])
         if from_user:
@@ -421,7 +687,8 @@ class BulkReturnView(APIView):
         if returning_van:
             q |= models.Q(status=SIM.Status.IN_STOCK, van_team=returning_van)
 
-        sims = SIM.objects.filter(
+        # Scoped to dealer
+        sims = _dealer_sim_qs(request.user).filter(
             serial_number__in=data["serial_numbers"]
         ).filter(q)
 
@@ -489,8 +756,8 @@ class BulkReturnView(APIView):
                 movement_type=SIMMovement.MovementType.RETURN,
                 from_user=from_user,
                 from_branch=from_branch_obj,
-                to_branch=destination_branch if 'destination_branch' in dir() else None,
-                van_team=destination_van if 'destination_van' in dir() else None,
+                to_branch=destination_branch,
+                van_team=destination_van,
                 to_user=request.user,
                 notes=data.get("notes", ""),
                 created_by=request.user,
@@ -498,7 +765,6 @@ class BulkReturnView(APIView):
 
         SIMMovement.objects.bulk_create(movements)
 
-        # ─── ADD THIS NOTIFICATION (if returned from a specific user) ─────────
         if from_user:
             from apps.notifications.models import Notification
             sim_count = sims.count()
@@ -517,7 +783,6 @@ class BulkReturnView(APIView):
                 ),
                 type=Notification.Type.RETURN,
             )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response(
             {"returned": sims.count(), "detail": f"{sims.count()} SIMs returned successfully."},
@@ -525,40 +790,12 @@ class BulkReturnView(APIView):
         )
 
 
-class SIMMovementBulkListView(generics.ListAPIView):
-    serializer_class = SIMMovementSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        qs = SIMMovement.objects.select_related(
-            "sim", "from_user", "to_user", "from_branch", "to_branch", "created_by"
-        ).order_by("-created_at")
-
-        movement_type = self.request.query_params.get("movement_type")
-        date = self.request.query_params.get("date")       # YYYY-MM-DD
-        from_branch = self.request.query_params.get("from_branch")
-        from_user = self.request.query_params.get("from_user")
-
-        if movement_type:
-            qs = qs.filter(movement_type=movement_type)
-        if date:
-            qs = qs.filter(created_at__date=date)
-        if from_branch:
-            qs = qs.filter(from_branch_id=from_branch)
-        if from_user:
-            qs = qs.filter(from_user_id=from_user)
-        created_by = self.request.query_params.get("created_by")
-        if created_by:
-            qs = qs.filter(created_by_id=created_by)
-        return qs
-
+# ─── Bulk Register ────────────────────────────────────────────────────────────
 
 class BulkRegisterView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        from rest_framework import serializers as drf_serializers
-
         serial_numbers = request.data.get("serial_numbers", [])
         notes = request.data.get("notes", "")
 
@@ -568,7 +805,8 @@ class BulkRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        sims = SIM.objects.filter(
+        # Scoped to dealer AND must be held by this user
+        sims = _dealer_sim_qs(request.user).filter(
             serial_number__in=serial_numbers,
             status=SIM.Status.ISSUED,
             current_holder=request.user,
@@ -607,14 +845,12 @@ class BulkRegisterView(APIView):
 
         SIMMovement.objects.bulk_create(movements)
 
-        # ─── ADD THIS NOTIFICATION (to BA who registered) ─────────────────────
         from apps.notifications.models import Notification
         sim_count = sims.count()
         serials_preview = ", ".join([s.serial_number for s in sims[:3]])
         if sim_count > 3:
             serials_preview += f" and {sim_count - 3} more"
 
-        # Notify the BA
         Notification.objects.create(
             recipient=request.user,
             title="✅ SIMs Registered Successfully",
@@ -627,16 +863,14 @@ class BulkRegisterView(APIView):
             type=Notification.Type.RECEIVE,
         )
 
-        # Notify finance team (users with finance role or dealer_owner/ops_manager)
         from apps.accounts.models import User as UserModel
+        dealer = _get_user_dealer(request.user)
         finance_recipients = UserModel.objects.filter(
             role__in=["finance", "dealer_owner", "operations_manager"],
             is_active=True,
         )
-        if request.user.dealer_org_id:
-            finance_recipients = finance_recipients.filter(
-                dealer_org_id=request.user.dealer_org_id
-            )
+        if dealer:
+            finance_recipients = finance_recipients.filter(dealer_org=dealer)
 
         for recipient in finance_recipients:
             Notification.objects.create(
@@ -649,7 +883,6 @@ class BulkRegisterView(APIView):
                 ),
                 type=Notification.Type.FINANCE,
             )
-        # ───────────────────────────────────────────────────────────────────────
 
         return Response(
             {
@@ -660,21 +893,24 @@ class BulkRegisterView(APIView):
         )
 
 
-# ── SIM Trace View ────────────────────────────────────────────────────────────
-
+# ─── SIM Trace View ───────────────────────────────────────────────────────────
 
 class SIMTraceView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, serial_number):
+        # Scoped to dealer — can't trace another dealer's SIM
+        sim_qs = _dealer_sim_qs(request.user)
         try:
-            sim = SIM.objects.select_related(
+            sim = sim_qs.select_related(
                 "current_holder", "branch", "van_team", "batch"
             ).get(serial_number=serial_number)
         except SIM.DoesNotExist:
-            return Response({"detail": "SIM not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "SIM not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        # ── Movements ─────────────────────────────────────────────────────────
         movements = SIMMovement.objects.filter(sim=sim).select_related(
             "from_user", "to_user", "from_branch", "to_branch", "created_by"
         ).order_by("created_at")
@@ -693,8 +929,7 @@ class SIMTraceView(APIView):
                 "created_by": m.created_by.full_name if m.created_by else None,
             })
 
-        # ── Reconciliation Records ─────────────────────────────────────────────
-        from apps.reconciliation.models import SafaricomReport, ReconciliationRecord
+        from apps.reconciliation.models import ReconciliationRecord
         recon_records = ReconciliationRecord.objects.filter(sim=sim).select_related(
             "report", "identified_ba"
         ).order_by("-report__period_start")
@@ -721,7 +956,6 @@ class SIMTraceView(APIView):
                 "commission_amount": str(r.commission_amount) if r.commission_amount else "0",
             })
 
-        # ── Verdict ────────────────────────────────────────────────────────────
         verdict = self._generate_verdict(sim, movements, recon_records)
 
         return Response({
@@ -908,3 +1142,433 @@ class SIMTraceView(APIView):
             "detail": "Unable to determine status for this SIM.",
             "commission_payable": False,
         }
+
+
+# ─── Resolve Lost SIMs ────────────────────────────────────────────────────────
+
+class ResolveLostSIMsView(APIView):
+    """
+    POST /inventory/actions/resolve-lost/
+    Body: {
+        "ba_id": 5,
+        "serial_numbers": ["001", "002"],
+        "loss_reason": "Stolen at Kibera market",
+        "loss_location": "Kibera, Nairobi",
+        "notes": "BA reported armed robbery"
+    }
+    Van leader/branch manager marks specific BA SIMs as lost.
+    Automatically creates a deduction record against the BA.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.notifications.models import Notification
+        from apps.dealers.models import VanTeamMember
+        from apps.accounts.models import User as UserModel
+
+        ba_id = request.data.get("ba_id")
+        serial_numbers = request.data.get("serial_numbers", [])
+        loss_reason = request.data.get("loss_reason", "").strip()
+        loss_location = request.data.get("loss_location", "").strip()
+        notes = request.data.get("notes", "").strip()
+
+        if not ba_id or not serial_numbers:
+            return Response(
+                {"detail": "ba_id and serial_numbers are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not loss_reason:
+            return Response(
+                {"detail": "loss_reason is required. Where/how were the SIMs lost?"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            ba = UserModel.objects.get(pk=ba_id)
+        except UserModel.DoesNotExist:
+            return Response(
+                {"detail": f"BA with id={ba_id} not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dealer = _get_user_dealer(request.user)
+
+        sims = _dealer_sim_qs(request.user).filter(
+            serial_number__in=serial_numbers,
+            current_holder=ba,
+            status=SIM.Status.ISSUED,
+        )
+
+        if sims.count() != len(serial_numbers):
+            found = set(sims.values_list("serial_number", flat=True))
+            missing = [s for s in serial_numbers if s not in found]
+            return Response(
+                {"detail": f"Some SIMs not found or not held by this BA: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        movements = []
+        for sim in sims:
+            from_branch = sim.branch
+            sim.status = SIM.Status.LOST
+            sim.current_holder = None
+            sim.save()
+
+            movements.append(SIMMovement(
+                sim=sim,
+                movement_type=SIMMovement.MovementType.LOST,
+                from_user=ba,
+                from_branch=from_branch,
+                notes=(
+                    f"Marked LOST by {request.user.full_name}.\n"
+                    f"Reason: {loss_reason}\n"
+                    f"Location: {loss_location or 'Not specified'}\n"
+                    f"Notes: {notes or 'None'}"
+                ),
+                created_by=request.user,
+            ))
+
+        SIMMovement.objects.bulk_create(movements)
+
+        # ── Auto-create deduction record ──────────────────────────────────────
+        from apps.commissions.models import DeductionRule, DeductionRecord
+        lost_rule = DeductionRule.objects.filter(
+            dealer=dealer,
+            violation_type=DeductionRule.ViolationType.LOST,
+            is_active=True,
+        ).first() if dealer else None
+
+        deduction_amount = 0
+        if lost_rule:
+            deduction_amount = float(
+                lost_rule.amount_per_unit) * len(serial_numbers)
+            DeductionRecord.objects.create(
+                agent=ba,
+                rule=lost_rule,
+                violation_type=DeductionRule.ViolationType.LOST,
+                sims_count=len(serial_numbers),
+                amount=deduction_amount,
+                reason=(
+                    f"Lost SIMs reported by {request.user.full_name}.\n"
+                    f"Location: {loss_location or 'Not specified'}\n"
+                    f"Reason: {loss_reason}\n"
+                    f"Serials: {', '.join(serial_numbers)}"
+                ),
+                settlement_mode=lost_rule.settlement_mode,
+                raised_by=request.user,
+            )
+
+        serials_preview = ", ".join(serial_numbers[:3])
+        if len(serial_numbers) > 3:
+            serials_preview += f" and {len(serial_numbers) - 3} more"
+
+        # Notify BA
+        Notification.objects.create(
+            recipient=ba,
+            title="📋 Lost SIMs Recorded",
+            message=(
+                f"{len(serial_numbers)} SIM(s) have been marked as LOST on your account.\n\n"
+                f"Serials: {serials_preview}\n"
+                f"Reason: {loss_reason}\n"
+                f"Location: {loss_location or 'Not specified'}\n"
+                f"Recorded by: {request.user.full_name}\n\n"
+                + (
+                    f"A deduction of KES {deduction_amount} has been raised against your account."
+                    if lost_rule else
+                    "A deduction may be raised. Please follow up with your manager."
+                )
+            ),
+            type=Notification.Type.ALERT,
+        )
+
+        # Notify branch manager and dealer owner
+        if dealer:
+            for recipient in UserModel.objects.filter(
+                role__in=["dealer_owner",
+                          "operations_manager", "branch_manager"],
+                dealer_org=dealer,
+                is_active=True,
+            ):
+                Notification.objects.create(
+                    recipient=recipient,
+                    title=f"📋 {len(serial_numbers)} SIM(s) Reported Lost — {ba.full_name}",
+                    message=(
+                        f"{len(serial_numbers)} SIM(s) have been marked as LOST.\n\n"
+                        f"BA: {ba.full_name}\n"
+                        f"Serials: {serials_preview}\n"
+                        f"Reason: {loss_reason}\n"
+                        f"Location: {loss_location or 'Not specified'}\n"
+                        f"Recorded by: {request.user.full_name}\n\n"
+                        + (
+                            f"Deduction of KES {deduction_amount} raised automatically."
+                            if lost_rule else
+                            "No active deduction rule found. Please raise manually."
+                        )
+                    ),
+                    type=Notification.Type.ALERT,
+                )
+
+        return Response(
+            {
+                "lost": len(serial_numbers),
+                "detail": f"{len(serial_numbers)} SIM(s) marked as lost.",
+                "deduction_raised": deduction_amount > 0,
+                "deduction_amount": deduction_amount,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─── Resolve Register on Behalf of BA ────────────────────────────────────────
+
+class ResolveRegisterSIMsView(APIView):
+    """
+    POST /inventory/actions/resolve-register/
+    Body: {
+        "ba_id": 5,
+        "serial_numbers": ["001", "002"]
+    }
+    Van leader/branch manager registers SIMs on behalf of BA.
+    All selected serials must be ticked — no partial allowed.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.notifications.models import Notification
+        from apps.accounts.models import User as UserModel
+
+        ba_id = request.data.get("ba_id")
+        serial_numbers = request.data.get("serial_numbers", [])
+        notes = request.data.get("notes", "").strip()
+
+        if not ba_id or not serial_numbers:
+            return Response(
+                {"detail": "ba_id and serial_numbers are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            ba = UserModel.objects.get(pk=ba_id)
+        except UserModel.DoesNotExist:
+            return Response(
+                {"detail": f"BA with id={ba_id} not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dealer = _get_user_dealer(request.user)
+
+        sims = _dealer_sim_qs(request.user).filter(
+            serial_number__in=serial_numbers,
+            current_holder=ba,
+            status=SIM.Status.ISSUED,
+        )
+
+        if sims.count() != len(serial_numbers):
+            found = set(sims.values_list("serial_number", flat=True))
+            missing = [s for s in serial_numbers if s not in found]
+            return Response(
+                {"detail": f"Some SIMs not found or not held by this BA: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        movements = []
+        for sim in sims:
+            from_branch = sim.branch
+            sim.status = SIM.Status.REGISTERED
+            sim.save()
+
+            movements.append(SIMMovement(
+                sim=sim,
+                movement_type=SIMMovement.MovementType.REGISTER,
+                from_user=ba,
+                from_branch=from_branch,
+                notes=(
+                    f"Registered on behalf of {ba.full_name} "
+                    f"by {request.user.full_name}.\n"
+                    f"Notes: {notes or 'No notes'}"
+                ),
+                created_by=request.user,
+            ))
+
+        SIMMovement.objects.bulk_create(movements)
+
+        serials_preview = ", ".join(serial_numbers[:3])
+        if len(serial_numbers) > 3:
+            serials_preview += f" and {len(serial_numbers) - 3} more"
+
+        # Notify BA
+        Notification.objects.create(
+            recipient=ba,
+            title="✅ SIMs Registered on Your Behalf",
+            message=(
+                f"{len(serial_numbers)} SIM(s) have been registered on your behalf.\n\n"
+                f"Serials: {serials_preview}\n"
+                f"Registered by: {request.user.full_name}\n\n"
+                f"These SIMs are now awaiting Safaricom confirmation."
+            ),
+            type=Notification.Type.ISSUE,
+        )
+
+        # Notify branch manager
+        if dealer:
+            from apps.accounts.models import User as UserModel
+            for recipient in UserModel.objects.filter(
+                role__in=["dealer_owner",
+                          "operations_manager", "branch_manager"],
+                dealer_org=dealer,
+                is_active=True,
+            ):
+                if recipient.id != request.user.id:
+                    Notification.objects.create(
+                        recipient=recipient,
+                        title=f"✅ SIMs Registered on Behalf of {ba.full_name}",
+                        message=(
+                            f"{len(serial_numbers)} SIM(s) registered on behalf of {ba.full_name}.\n\n"
+                            f"Serials: {serials_preview}\n"
+                            f"Registered by: {request.user.full_name}\n\n"
+                            f"Awaiting Safaricom confirmation."
+                        ),
+                        type=Notification.Type.FINANCE,
+                    )
+
+        return Response(
+            {
+                "registered": len(serial_numbers),
+                "detail": f"{len(serial_numbers)} SIM(s) registered on behalf of {ba.full_name}.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─── Resolve Faulty SIMs ─────────────────────────────────────────────────────
+
+class ResolveFaultySIMsView(APIView):
+    """
+    POST /inventory/actions/resolve-faulty/
+    Body: {
+        "ba_id": 5,
+        "serial_numbers": ["001", "002"],
+        "fault_reason": "Registration error on Safaricom system",
+        "notes": "BA tried 5 times, same error"
+    }
+    Marks SIMs as FAULTY, returns them from BA,
+    alerts dealer owner + branch manager to investigate with Safaricom.
+    No new issue allowed until resolved.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.notifications.models import Notification
+        from apps.accounts.models import User as UserModel
+
+        ba_id = request.data.get("ba_id")
+        serial_numbers = request.data.get("serial_numbers", [])
+        fault_reason = request.data.get("fault_reason", "").strip()
+        notes = request.data.get("notes", "").strip()
+
+        if not ba_id or not serial_numbers:
+            return Response(
+                {"detail": "ba_id and serial_numbers are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not fault_reason:
+            return Response(
+                {"detail": "fault_reason is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            ba = UserModel.objects.get(pk=ba_id)
+        except UserModel.DoesNotExist:
+            return Response(
+                {"detail": f"BA with id={ba_id} not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dealer = _get_user_dealer(request.user)
+
+        sims = _dealer_sim_qs(request.user).filter(
+            serial_number__in=serial_numbers,
+            current_holder=ba,
+            status=SIM.Status.ISSUED,
+        )
+
+        if sims.count() != len(serial_numbers):
+            found = set(sims.values_list("serial_number", flat=True))
+            missing = [s for s in serial_numbers if s not in found]
+            return Response(
+                {"detail": f"Some SIMs not found or not held by this BA: {missing}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        movements = []
+        for sim in sims:
+            from_branch = sim.branch
+            sim.status = SIM.Status.FAULTY
+            sim.current_holder = None
+            sim.save()
+
+            movements.append(SIMMovement(
+                sim=sim,
+                movement_type=SIMMovement.MovementType.FAULTY,
+                from_user=ba,
+                from_branch=from_branch,
+                notes=(
+                    f"Marked FAULTY by {request.user.full_name}.\n"
+                    f"Fault reason: {fault_reason}\n"
+                    f"Notes: {notes or 'None'}"
+                ),
+                created_by=request.user,
+            ))
+
+        SIMMovement.objects.bulk_create(movements)
+
+        serials_preview = ", ".join(serial_numbers[:3])
+        if len(serial_numbers) > 3:
+            serials_preview += f" and {len(serial_numbers) - 3} more"
+
+        # Notify BA
+        Notification.objects.create(
+            recipient=ba,
+            title="⚠️ Faulty SIMs Recorded",
+            message=(
+                f"{len(serial_numbers)} SIM(s) have been marked as FAULTY and returned.\n\n"
+                f"Serials: {serials_preview}\n"
+                f"Fault reason: {fault_reason}\n"
+                f"Recorded by: {request.user.full_name}\n\n"
+                f"These SIMs are being investigated. "
+                f"You are NOT responsible for these SIMs."
+            ),
+            type=Notification.Type.ALERT,
+        )
+
+        # Notify dealer owner + ops manager — they need to chase Safaricom
+        if dealer:
+            for recipient in UserModel.objects.filter(
+                role__in=["dealer_owner", "operations_manager"],
+                dealer_org=dealer,
+                is_active=True,
+            ):
+                Notification.objects.create(
+                    recipient=recipient,
+                    title=f"🚨 Faulty SIMs Reported — Safaricom Investigation Needed",
+                    message=(
+                        f"{len(serial_numbers)} SIM(s) have been reported as FAULTY by BA {ba.full_name}.\n\n"
+                        f"Serials: {serials_preview}\n"
+                        f"Fault reason: {fault_reason}\n"
+                        f"Reported by: {request.user.full_name}\n"
+                        f"Notes: {notes or 'None'}\n\n"
+                        f"⚠️ ACTION REQUIRED: Please contact Safaricom to investigate "
+                        f"why these SIM cards cannot be registered.\n"
+                        f"These SIMs are now blocked from re-issue until resolved."
+                    ),
+                    type=Notification.Type.ALERT,
+                )
+
+        return Response(
+            {
+                "faulty": len(serial_numbers),
+                "detail": f"{len(serial_numbers)} SIM(s) marked as faulty. Dealer notified.",
+            },
+            status=status.HTTP_200_OK,
+        )

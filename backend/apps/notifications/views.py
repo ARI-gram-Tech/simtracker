@@ -85,15 +85,9 @@ class UnreadCountView(APIView):
 class SendEmailView(APIView):
     """
     POST /api/notifications/send-email/
-    Admin-only. Sends an HTML email (with plain text fallback) and logs it.
-
-    Expected body:
-        recipient_email  – required
-        subject          – required
-        body             – required  (plain-text version)
-        html_body        – optional  (HTML version; falls back to `body` if omitted)
+    Admin-only. Sends an HTML email ...
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsDealerOwnerOrManager]
 
     def post(self, request):
         recipient_email = request.data.get("recipient_email")

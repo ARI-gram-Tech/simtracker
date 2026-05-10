@@ -1,3 +1,4 @@
+# inventory/serializers.py
 from rest_framework import serializers
 
 from apps.accounts.serializers import UserSerializer
@@ -45,6 +46,7 @@ class SIMMovementSerializer(serializers.ModelSerializer):
     to_user = serializers.SerializerMethodField()
     from_branch = serializers.SerializerMethodField()
     to_branch = serializers.SerializerMethodField()
+    van_team = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
 
     class Meta:
@@ -77,6 +79,11 @@ class SIMMovementSerializer(serializers.ModelSerializer):
     def get_from_branch(self, obj): return self._branch(obj.from_branch)
     def get_to_branch(self, obj): return self._branch(obj.to_branch)
     def get_created_by(self, obj): return self._user(obj.created_by)
+
+    def get_van_team(self, obj):
+        if not obj.van_team:
+            return None
+        return {"id": obj.van_team.id, "name": obj.van_team.name}
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user

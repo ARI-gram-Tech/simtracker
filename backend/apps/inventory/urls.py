@@ -11,7 +11,10 @@ from .views import (
     SIMMovementBulkListView,
     BulkRegisterView,
     SIMTraceView,
-    BulkDeleteSIMsView,          # ← new
+    BulkDeleteSIMsView,
+    ResolveLostSIMsView,
+    ResolveRegisterSIMsView,
+    ResolveFaultySIMsView,
 )
 
 urlpatterns = [
@@ -26,8 +29,14 @@ urlpatterns = [
          BulkReturnView.as_view(),         name="bulk_return"),
     path("actions/bulk-register/",
          BulkRegisterView.as_view(),       name="bulk_register"),
-    path("actions/bulk-delete/",           # ← new
-         BulkDeleteSIMsView.as_view(),     name="bulk_delete"),
+    path("actions/bulk-delete/",
+         BulkDeleteSIMsView.as_view(),       name="bulk_delete"),
+    path("actions/resolve-lost/",
+         ResolveLostSIMsView.as_view(),      name="resolve_lost"),
+    path("actions/resolve-register/",
+         ResolveRegisterSIMsView.as_view(),  name="resolve_register"),
+    path("actions/resolve-faulty/",
+         ResolveFaultySIMsView.as_view(),    name="resolve_faulty"),
     path("movements/",
          SIMMovementBulkListView.as_view(), name="movement_list"),
 

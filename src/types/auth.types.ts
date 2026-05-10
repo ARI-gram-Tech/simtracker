@@ -61,6 +61,11 @@ export interface UserProfile {
   role: UserRole;
   is_active: boolean;
   date_joined: string;
+  dealer_id?:     number | null;
+  branch_id?:     number | null;
+  branch_name?:   string | null;
+  van_team_id?:   number | null;
+  van_team_name?: string | null;
 }
 
 

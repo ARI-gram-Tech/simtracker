@@ -67,6 +67,45 @@ export function useBulkIssueSIMs() {
   });
 }
 
+export function useResolveLost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types/inventory.types").ResolveLostRequest) =>
+      inventoryService.resolveLost(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sims"] });
+      qc.invalidateQueries({ queryKey: ["simMovements"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+}
+
+export function useResolveRegister() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types/inventory.types").ResolveRegisterRequest) =>
+      inventoryService.resolveRegister(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sims"] });
+      qc.invalidateQueries({ queryKey: ["simMovements"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+}
+
+export function useResolveFaulty() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types/inventory.types").ResolveFaultyRequest) =>
+      inventoryService.resolveFaulty(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sims"] });
+      qc.invalidateQueries({ queryKey: ["simMovements"] });
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+}
+
 export function useBulkReturnSIMs() {
   const qc = useQueryClient();
   return useMutation({

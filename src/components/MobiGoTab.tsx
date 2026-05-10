@@ -68,9 +68,7 @@ function AddMobiGoDialog({
 
   const isValid =
     imis.trim() &&
-    simSerialNumber.trim() &&
-    baMsisdn.trim();
-
+    simSerialNumber.trim();
   const handleAdd = async () => {
     if (!isValid || !dealerId) return;
     setApiError("");
@@ -82,7 +80,7 @@ function AddMobiGoDialog({
           imis:              imis.trim(),
           mobigo_sim_number: mobigoSimNumber.trim(),
           sim_serial_number: simSerialNumber.trim(),
-          ba_msisdn:         "+254" + baMsisdn.replace(/\D/g, ""),
+          ba_msisdn:         baMsisdn.trim() ? "+254" + baMsisdn.replace(/\D/g, "") : "",
           agent_msisdn:      agentMsisdn.trim() ? "+254" + agentMsisdn.replace(/\D/g, "") : "",
           assigned_ba:       assignedBa ? Number(assignedBa) : null,
           notes:             notes.trim(),
@@ -222,8 +220,8 @@ function AddMobiGoDialog({
             <div>
               <label className="block text-sm font-medium text-foreground mb-1.5">
                 <Phone className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
-                BA MSISDN <span className="text-destructive">*</span>
-                <span className="text-xs font-normal text-muted-foreground ml-1">(BA's personal Safaricom number)</span>
+                BA MSISDN
+                <span className="text-xs font-normal text-muted-foreground ml-1">(BA's personal Safaricom number, optional)</span>
               </label>
               <div className="flex">
                 <span className="inline-flex items-center rounded-l-md border border-r-0 border-border bg-accent/60 px-2 text-xs text-muted-foreground">+254</span>
@@ -645,6 +643,10 @@ export function MobiGoTab({
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [editMobiGo,    setEditMobiGo]    = useState<MobiGo | null>(null);
   const [activeMobiGo,  setActiveMobiGo]  = useState<MobiGo | null>(null);
+  const [page,          setPage]          = useState(1);   
+  const PAGE_SIZE = 20;                                    
+  const totalPages = Math.ceil(mobigos.length / PAGE_SIZE);
+  const paginatedMobigos = mobigos.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="space-y-4">
@@ -707,7 +709,7 @@ export function MobiGoTab({
                     </td>
                   </tr>
                 ) : (
-                  mobigos.map(m => {
+                  paginatedMobigos.map(m => {
                     const baName = m.assigned_ba_details?.full_name
                       ?? (m.assigned_ba
                         ? userFullName(baUsers.find(u => u.id === m.assigned_ba)!)
@@ -791,9 +793,30 @@ export function MobiGoTab({
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {mobigos.length} device{mobigos.length !== 1 ? "s" : ""} registered
-          </p>
+          <div className="flex items-center justify-between pt-2">
+            <p className="text-xs text-muted-foreground">
+              {mobigos.length} device{mobigos.length !== 1 ? "s" : ""} registered
+            </p>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={page === 1}
+                  onClick={() => setPage(p => p - 1)}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 transition-colors">
+                  Prev
+                </button>
+                <span className="text-xs text-muted-foreground">
+                  Page {page} of {totalPages}
+                </span>
+                <button
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(p => p + 1)}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50 transition-colors">
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
         </>
       )}
 
