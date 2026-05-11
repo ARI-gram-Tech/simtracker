@@ -410,6 +410,7 @@ export default function IssueSims() {
   const [unresolvedAlert,    setUnresolvedAlert]    = useState<UnresolvedAlert | null>(null);
   const [resolveMode,        setResolveMode]        = useState<"register" | "lost" | "faulty" | null>(null);
   const [selectedSerials,    setSelectedSerials]    = useState<string[]>([]);
+  const [checkedSerials,     setCheckedSerials]     = useState<string[]>([]);
   const [lossReason,         setLossReason]         = useState("");
   const [lossLocation,       setLossLocation]       = useState("");
   const [faultReason,        setFaultReason]        = useState("");
@@ -731,7 +732,7 @@ export default function IssueSims() {
                     </div>
                   </button>
 
-                  <button onClick={() => { setResolveMode("lost"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); }}
+                  <button onClick={() => { setResolveMode("lost"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); setCheckedSerials([]); }}
                     className="flex items-center gap-3 rounded-lg border border-orange-500/30 bg-orange-500/10 px-4 py-3 text-left hover:bg-orange-500/20 transition-colors">
                     <Skull className="h-5 w-5 text-orange-400 shrink-0" />
                     <div>
@@ -740,7 +741,7 @@ export default function IssueSims() {
                     </div>
                   </button>
 
-                  <button onClick={() => { setResolveMode("faulty"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); }}
+                  <button onClick={() => { setResolveMode("faulty"); setSelectedSerials([...unresolvedAlert.unresolved_serials]); setCheckedSerials([]); }}
                     className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-left hover:bg-yellow-500/20 transition-colors">
                     <Wrench className="h-5 w-5 text-yellow-400 shrink-0" />
                     <div>
@@ -814,11 +815,36 @@ export default function IssueSims() {
                   <p className="text-sm font-semibold text-foreground">Mark SIMs as Lost</p>
                 </div>
 
-                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
-                  {selectedSerials.map(s => (
-                    <span key={s} className="font-mono text-xs bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded px-2 py-0.5">
-                      {s}
+                <p className="text-xs text-muted-foreground">
+                  Select only the SIMs that are lost. Leave others unchecked — you will handle them separately.
+                </p>
+
+                {/* Checkbox list */}
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-40 overflow-y-auto space-y-1.5">
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-border">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {checkedSerials.length} of {selectedSerials.length} selected
                     </span>
+                    <button
+                      onClick={() => setCheckedSerials(
+                        checkedSerials.length === selectedSerials.length ? [] : [...selectedSerials]
+                      )}
+                      className="text-xs text-primary hover:underline">
+                      {checkedSerials.length === selectedSerials.length ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                  {selectedSerials.map(s => (
+                    <label key={s} className="flex items-center gap-2.5 cursor-pointer rounded px-2 py-1.5 hover:bg-accent transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={checkedSerials.includes(s)}
+                        onChange={e => setCheckedSerials(prev =>
+                          e.target.checked ? [...prev, s] : prev.filter(x => x !== s)
+                        )}
+                        className="h-3.5 w-3.5 rounded border-border accent-orange-500"
+                      />
+                      <span className="font-mono text-xs text-orange-400">{s}</span>
+                    </label>
                   ))}
                 </div>
 
@@ -850,12 +876,32 @@ export default function IssueSims() {
                     className="flex-1 rounded-md border border-border py-2 text-sm font-medium hover:bg-accent transition-colors">
                     Back
                   </button>
-                  <button onClick={handleResolveLost} disabled={!lossReason.trim() || isResolvePending}
+                  <button
+                    onClick={() => {
+                      const remaining = selectedSerials.filter(s => !checkedSerials.includes(s));
+                      setSelectedSerials(checkedSerials);
+                      handleResolveLost().then(() => {
+                        if (remaining.length > 0) {
+                          setSelectedSerials(remaining);
+                          setCheckedSerials([]);
+                          setResolveMode(null);
+                          setLossReason("");
+                          setLossLocation("");
+                        }
+                      });
+                    }}
+                    disabled={!lossReason.trim() || checkedSerials.length === 0 || isResolvePending}
                     className="flex-1 flex items-center justify-center gap-2 rounded-md bg-orange-600 py-2 text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity">
                     {resolveLost.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {resolveLost.isPending ? "Marking Lost…" : `Mark ${selectedSerials.length} as Lost`}
+                    {resolveLost.isPending ? "Marking Lost…" : `Mark ${checkedSerials.length} as Lost`}
                   </button>
                 </div>
+
+                {selectedSerials.filter(s => !checkedSerials.includes(s)).length > 0 && checkedSerials.length > 0 && (
+                  <p className="text-xs text-amber-500">
+                    ⚠️ {selectedSerials.filter(s => !checkedSerials.includes(s)).length} SIM(s) not selected — you will need to handle them after confirming.
+                  </p>
+                )}
               </div>
             )}
 
@@ -869,11 +915,36 @@ export default function IssueSims() {
                   <p className="text-sm font-semibold text-foreground">Report Faulty SIMs</p>
                 </div>
 
-                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
-                  {selectedSerials.map(s => (
-                    <span key={s} className="font-mono text-xs bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded px-2 py-0.5">
-                      {s}
+                <p className="text-xs text-muted-foreground">
+                  Select only the SIMs with a Safaricom registration error. Leave others unchecked.
+                </p>
+
+                {/* Checkbox list */}
+                <div className="rounded-lg border border-border bg-accent/30 p-3 max-h-40 overflow-y-auto space-y-1.5">
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-border">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {checkedSerials.length} of {selectedSerials.length} selected
                     </span>
+                    <button
+                      onClick={() => setCheckedSerials(
+                        checkedSerials.length === selectedSerials.length ? [] : [...selectedSerials]
+                      )}
+                      className="text-xs text-primary hover:underline">
+                      {checkedSerials.length === selectedSerials.length ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                  {selectedSerials.map(s => (
+                    <label key={s} className="flex items-center gap-2.5 cursor-pointer rounded px-2 py-1.5 hover:bg-accent transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={checkedSerials.includes(s)}
+                        onChange={e => setCheckedSerials(prev =>
+                          e.target.checked ? [...prev, s] : prev.filter(x => x !== s)
+                        )}
+                        className="h-3.5 w-3.5 rounded border-border accent-yellow-500"
+                      />
+                      <span className="font-mono text-xs text-yellow-400">{s}</span>
+                    </label>
                   ))}
                 </div>
 
@@ -902,12 +973,31 @@ export default function IssueSims() {
                     className="flex-1 rounded-md border border-border py-2 text-sm font-medium hover:bg-accent transition-colors">
                     Back
                   </button>
-                  <button onClick={handleResolveFaulty} disabled={!faultReason.trim() || isResolvePending}
+                  <button
+                    onClick={() => {
+                      const remaining = selectedSerials.filter(s => !checkedSerials.includes(s));
+                      setSelectedSerials(checkedSerials);
+                      handleResolveFaulty().then(() => {
+                        if (remaining.length > 0) {
+                          setSelectedSerials(remaining);
+                          setCheckedSerials([]);
+                          setResolveMode(null);
+                          setFaultReason("");
+                        }
+                      });
+                    }}
+                    disabled={!faultReason.trim() || checkedSerials.length === 0 || isResolvePending}
                     className="flex-1 flex items-center justify-center gap-2 rounded-md bg-yellow-600 py-2 text-sm font-semibold text-white disabled:opacity-50 hover:opacity-90 transition-opacity">
                     {resolveFaulty.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {resolveFaulty.isPending ? "Reporting…" : `Report ${selectedSerials.length} as Faulty`}
+                    {resolveFaulty.isPending ? "Reporting…" : `Report ${checkedSerials.length} as Faulty`}
                   </button>
                 </div>
+
+                {selectedSerials.filter(s => !checkedSerials.includes(s)).length > 0 && checkedSerials.length > 0 && (
+                  <p className="text-xs text-amber-500">
+                    ⚠️ {selectedSerials.filter(s => !checkedSerials.includes(s)).length} SIM(s) not selected — you will need to handle them after confirming.
+                  </p>
+                )}
               </div>
             )}
           </div>
