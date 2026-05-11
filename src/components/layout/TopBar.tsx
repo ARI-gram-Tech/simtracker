@@ -1,5 +1,5 @@
 // src/components/TopBar.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Bell, Menu, X, LogOut, User, Settings, Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
@@ -12,6 +12,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 interface TopBarProps {
   collapsed: boolean;
   onToggleSidebar: () => void;
+  isMobile?: boolean;
 }
 
 const settingsPath: Record<string, string> = {
@@ -65,10 +66,10 @@ function getDailyQuote(): string {
   return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
 }
 
-export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
+export function TopBar({ collapsed, onToggleSidebar, isMobile = false }: TopBarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu,      setShowUserMenu]       = useState(false);
-  const [showProfile,       setShowProfile]        = useState(false);   // ← new
+  const [showProfile,       setShowProfile]        = useState(false);
   const { theme, toggleTheme } = useTheme();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -95,19 +96,24 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
     <>
       <header
         className={cn(
-          "fixed top-0 right-0 z-30 flex h-16 items-center justify-between border-b border-border bg-card px-6 transition-all duration-200",
-          collapsed ? "left-16" : "left-60"
+          "fixed top-0 right-0 z-30 flex h-16 items-center justify-between border-b border-border bg-card px-4 md:px-6 transition-all duration-200",
+          isMobile
+            ? "left-0"
+            : collapsed
+            ? "left-16"
+            : "left-60"
         )}
       >
-        <div className="flex items-center gap-4">
+        {/* Left side */}
+        <div className="flex items-center gap-3">
           <button
             onClick={onToggleSidebar}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           >
-            {collapsed ? <Menu className="h-5 w-5" /> : <X className="h-5 w-5" />}
+            {(!isMobile && !collapsed) ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
 
-          {/* Greeting + quote */}
+          {/* Greeting + quote — hidden on small screens */}
           <div className="hidden md:flex flex-col leading-tight">
             <span className="text-sm font-medium text-foreground">
               {getGreeting(fullName)}
@@ -118,8 +124,9 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          {/* Date + time */}
+        {/* Right side */}
+        <div className="flex items-center gap-2 md:gap-4">
+          {/* Date + time — hidden on mobile */}
           <div className="hidden md:flex flex-col items-end leading-tight">
             <span className="text-xs font-medium text-foreground">{getFormattedTime()}</span>
             <span className="text-xs text-muted-foreground">{getFormattedDate()}</span>
@@ -134,7 +141,7 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
             {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </button>
 
-          {/* Bell — live badge */}
+          {/* Bell */}
           <button
             onClick={() => setShowNotifications(true)}
             className="relative rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
@@ -170,7 +177,6 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
                     </p>
                   </div>
 
-                  {/* ── My Profile ── */}
                   <button
                     onClick={() => { setShowUserMenu(false); setShowProfile(true); }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-accent"
@@ -201,8 +207,6 @@ export function TopBar({ collapsed, onToggleSidebar }: TopBarProps) {
       </header>
 
       <NotificationsPanel open={showNotifications} onClose={() => setShowNotifications(false)} />
-
-      {/* Profile modal */}
       <ProfileModal open={showProfile} onClose={() => setShowProfile(false)} />
     </>
   );
