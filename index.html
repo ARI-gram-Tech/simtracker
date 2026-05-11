@@ -10,17 +10,43 @@
     />
     <meta name="author" content="SimTrack" />
 
-    <!-- PWA -->
+    <!-- PWA manifest -->
     <link rel="manifest" href="/manifest.json" />
+
+    <!-- Theme color for browser chrome -->
     <meta name="theme-color" content="#0f172a" />
+
+    <!-- Android / Chrome PWA -->
     <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- iOS PWA -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
     <meta name="apple-mobile-web-app-title" content="SimTrack" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+
+    <!-- iOS icons (add more sizes if you have them) -->
+    <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png" />
+
+    <!-- iOS splash screens (optional but improves experience) -->
+    <!-- Generate at https://progressier.com/pwa-splash-screen-generator -->
+
+    <!-- Standard favicon -->
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="192x192"
+      href="/icons/icon-192.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="512x512"
+      href="/icons/icon-512.png"
+    />
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -52,5 +78,45 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!--
+      Service Worker registration.
+      Placed at end of body so it never blocks the app from loading.
+      Uses a module-style registration so Vite/build tools can manage the SW path correctly.
+    -->
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", function () {
+          navigator.serviceWorker
+            .register("/sw.js", { scope: "/" })
+            .then(function (registration) {
+              console.log(
+                "[SimTrack SW] Registered, scope:",
+                registration.scope,
+              );
+
+              // When a new SW is waiting, reload to activate it immediately
+              registration.addEventListener("updatefound", function () {
+                const newWorker = registration.installing;
+                if (!newWorker) return;
+                newWorker.addEventListener("statechange", function () {
+                  if (
+                    newWorker.state === "installed" &&
+                    navigator.serviceWorker.controller
+                  ) {
+                    // New content is available — optionally notify the user
+                    console.log("[SimTrack SW] New version available.");
+                    // Uncomment to auto-reload on update:
+                    // window.location.reload();
+                  }
+                });
+              });
+            })
+            .catch(function (err) {
+              console.error("[SimTrack SW] Registration failed:", err);
+            });
+        });
+      }
+    </script>
   </body>
 </html>
