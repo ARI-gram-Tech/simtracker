@@ -96,6 +96,14 @@ export const commissionsService = {
       return (data as { results: PayoutRecord[] }).results ?? [];
     }),
 
+  listAgentApprovedDeductions: (agentId: number) =>
+    api.get(ENDPOINTS.DEDUCTION_RECORDS, {
+      params: { agent: agentId, status: "approved" },
+    }).then(r => {
+      const data = r.data;
+      return Array.isArray(data) ? data : (data?.results ?? []);
+    }),
+    
   listPayoutsByRecord: (commissionRecordId: number) =>
     api.get<PayoutRecord[] | { results: PayoutRecord[] }>(ENDPOINTS.PAYOUTS, {
       params: { commission_record: commissionRecordId },

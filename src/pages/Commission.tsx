@@ -22,6 +22,7 @@ import {
   useCreatePayout,
   useDeductionRules,
   useBASimBreakdown,
+  useAgentApprovedDeductions,
 } from "@/hooks/useCommissions";
 import type { CommissionCycle, CommissionRecord, BASimBreakdownResponse, BASimRow } from "@/types/commissions.types";
 import {
@@ -252,6 +253,9 @@ function PayoutDialog({
   const [txRef,  setTxRef]  = useState("");
   const [notes,  setNotes]  = useState("");
   const createPayout = useCreatePayout();
+  const { data: deductions = [], isLoading: deductionsLoading } = useAgentApprovedDeductions(
+    record?.agent ?? undefined
+  );
 
   if (!record) return null;
 
@@ -289,10 +293,40 @@ function PayoutDialog({
           </button>
         </div>
 
-        <div className="rounded-lg border border-border bg-accent/30 px-4 py-3 mb-4">
+        {/* Commission summary */}
+        <div className="rounded-lg border border-border bg-accent/30 px-4 py-3 mb-4 space-y-2">
           <p className="text-sm font-medium text-foreground">{record.agent_name}</p>
-          <p className="text-xl font-bold text-foreground mt-0.5">{fmt(record.net_amount)}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">{record.active_sims} active SIMs</p>
+
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">{record.active_sims} active SIMs × KES {Number(record.rate_per_sim).toLocaleString()}</span>
+            <span className="font-medium text-foreground">{fmt(record.gross_amount)}</span>
+          </div>
+
+          {/* Deduction lines */}
+          {deductionsLoading && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> Loading deductions…
+            </div>
+          )}
+          {!deductionsLoading && deductions.length > 0 && (
+            <div className="space-y-1 border-t border-border/50 pt-2">
+              {deductions.map((d: { id: number; rule_name: string; violation_type: string; sims_count: number; amount: number }) => (
+                <div key={d.id} className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">
+                    {d.rule_name ?? VIOLATION_LABELS[d.violation_type] ?? d.violation_type}
+                    {d.sims_count > 1 ? ` (×${d.sims_count})` : ""}
+                  </span>
+                  <span className="text-destructive font-medium">− {fmt(d.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Divider + net */}
+          <div className="border-t border-border pt-2 flex justify-between items-center">
+            <span className="text-sm font-semibold text-foreground">Net Payable</span>
+            <span className="text-lg font-bold text-green-500">{fmt(record.net_amount)}</span>
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -336,7 +370,7 @@ function PayoutDialog({
             className="flex-1 rounded-md border border-border py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50">
             Cancel
           </button>
-          <button onClick={handlePay} disabled={createPayout.isPending}
+          <button onClick={handlePay} disabled={createPayout.isPending || deductionsLoading}
             className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50 hover:opacity-90 transition-opacity">
             {createPayout.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             {createPayout.isPending ? "Recording…" : "Record Payout"}

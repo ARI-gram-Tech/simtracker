@@ -153,7 +153,16 @@ class SIMListView(generics.ListAPIView):
         search = self.request.query_params.get("search")
         van_team = self.request.query_params.get("van_team")   # ← parse first
 
-        if sim_status:
+        # New param: location=branch_stock | van_stock | with_ba
+        location = self.request.query_params.get("location")
+        if location == "branch_stock":
+            qs = qs.filter(status=SIM.Status.IN_STOCK, van_team__isnull=True)
+        elif location == "van_stock":
+            qs = qs.filter(status=SIM.Status.IN_STOCK, van_team__isnull=False)
+        elif location == "with_ba":
+            qs = qs.filter(status=SIM.Status.ISSUED,
+                           current_holder__isnull=False)
+        elif sim_status:
             if sim_status == "in_stock":
                 if van_team and van_team != "-1":
                     qs = qs.filter(status=sim_status)
@@ -161,11 +170,9 @@ class SIMListView(generics.ListAPIView):
                     qs = qs.filter(status=sim_status, van_team__isnull=True)
             elif sim_status == "issued":
                 if van_team and van_team != "-1":
-                    # Van context: only BA-held SIMs
                     qs = qs.filter(status=SIM.Status.ISSUED,
                                    current_holder__isnull=False)
                 else:
-                    # Dealer/branch context: BA-held + van stock
                     qs = qs.filter(
                         models.Q(status=SIM.Status.ISSUED) |
                         models.Q(status=SIM.Status.IN_STOCK,
@@ -1572,3 +1579,79 @@ class ResolveFaultySIMsView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class BatchSummaryView(APIView):
+    """
+    GET /inventory/batches/summary/
+    Returns a summary of unresolved SIMs across all previous batches.
+    Used before adding a new batch so the dealer can see the current state.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        dealer = _get_user_dealer(request.user)
+        base_qs = _dealer_sim_qs(request.user)
+
+        batches = _dealer_batch_qs(request.user).order_by("-received_at")
+
+        summary = []
+        for batch in batches:
+            batch_sims = base_qs.filter(batch=batch)
+            summary.append({
+                "id":           batch.id,
+                "batch_number": batch.batch_number,
+                "received_at":  batch.received_at.isoformat(),
+                "total":        batch_sims.count(),
+                "in_stock":     batch_sims.filter(status="in_stock", van_team__isnull=True).count(),
+                "in_vans":      batch_sims.filter(status="in_stock", van_team__isnull=False).count(),
+                "with_ba":      batch_sims.filter(status="issued", current_holder__isnull=False).count(),
+                "registered":   batch_sims.filter(status="registered").count(),
+                "activated":    batch_sims.filter(status="activated").count(),
+                "lost_faulty":  batch_sims.filter(status__in=["lost", "faulty"]).count(),
+                "returned":     batch_sims.filter(status="returned").count(),
+            })
+
+        return Response(summary)
+
+
+class CarryForwardView(APIView):
+    """
+    POST /inventory/batches/carry-forward/
+    Body: { "from_batch": 1, "to_batch": 2 }
+    Moves all unresolved SIMs (in_stock, in_vans, with_ba, registered)
+    from old batch to new batch. Activated and lost/faulty stay.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from_batch_id = request.data.get("from_batch")
+        to_batch_id = request.data.get("to_batch")
+
+        if not from_batch_id or not to_batch_id:
+            return Response(
+                {"detail": "from_batch and to_batch are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        base_qs = _dealer_sim_qs(request.user)
+
+        try:
+            from_batch = _dealer_batch_qs(request.user).get(pk=from_batch_id)
+            to_batch = _dealer_batch_qs(request.user).get(pk=to_batch_id)
+        except SIMBatch.DoesNotExist:
+            return Response(
+                {"detail": "Batch not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Only move unresolved SIMs — activated, lost, faulty stay on old batch
+        moved = base_qs.filter(
+            batch=from_batch,
+            status__in=["in_stock", "issued", "registered"],
+        ).update(batch=to_batch)
+
+        return Response({
+            "detail": f"{moved} SIMs carried forward to {to_batch.batch_number}.",
+            "moved": moved,
+        })

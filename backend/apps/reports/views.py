@@ -92,7 +92,8 @@ class LivePerformanceSummaryView(APIView):
             base = base.filter(current_holder_id=ba_id)
 
         in_field = base.filter(
-            status__in=[SIM.Status.ISSUED, SIM.Status.REGISTERED]
+            status=SIM.Status.ISSUED,
+            current_holder__isnull=False,
         ).count()
         registered = base.filter(status=SIM.Status.REGISTERED).count()
         fraud = base.filter(status=SIM.Status.FRAUD_FLAGGED).count()
@@ -123,7 +124,7 @@ class LivePerformanceSummaryView(APIView):
 
         ba_held_qs = (
             base.filter(
-                status__in=[SIM.Status.ISSUED, SIM.Status.REGISTERED],
+                status=SIM.Status.ISSUED,
                 current_holder__isnull=False,
             )
             .values(
@@ -165,6 +166,15 @@ class LivePerformanceSummaryView(APIView):
 
         ba_conf = {}
         ba_comm = {}
+        # Use activated SIMs from inventory as confirmed count — most reliable source
+        for row in (
+            base.filter(status=SIM.Status.ACTIVATED,
+                        current_holder__isnull=False)
+            .values("current_holder")
+            .annotate(cnt=Count("id"))
+        ):
+            ba_conf[row["current_holder"]] = row["cnt"]
+
         if latest_report:
             for row in (
                 ReconciliationRecord.objects.filter(
@@ -174,6 +184,7 @@ class LivePerformanceSummaryView(APIView):
                 .values("identified_ba")
                 .annotate(cnt=Count("id"), total=Sum("commission_amount"))
             ):
+                # Prefer recon count if available, else fall back to activated count
                 ba_conf[row["identified_ba"]] = row["cnt"]
                 ba_comm[row["identified_ba"]] = float(row["total"] or 0)
 
@@ -386,7 +397,7 @@ class AgentPerformanceSummaryView(APIView):
                 total_registered=Sum("sims_registered"),
                 total_fraud=Sum("sims_fraud"),
             )
-            .order_by("-total_registered")
+            .order_by("-total_registered", "-confirmed")
         )
         return Response(list(data))
 

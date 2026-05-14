@@ -1,6 +1,6 @@
 // src/pages/SimInventory.tsx
 // Full inventory page — adds Edit modal, single/bulk delete for owner/ops/super_admin
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Search, Download, Eye, Layers, Plus, X, ChevronRight,
   AlertCircle, Loader2, RefreshCw, ArrowRightLeft,
@@ -17,8 +17,9 @@ import {
 import { useBranches, useVanTeams, useAllVanTeams } from "@/hooks/useDealers";
 import { useUsers } from "@/hooks/useUsers";
 import { showSuccess, showError } from "@/lib/toast";
+import api from "@/lib/api";
 import type { SIM, SIMStatus, MovementType, SIMMovement } from "@/types/inventory.types";
-
+import { ENDPOINTS } from "@/constants/endpoints";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -299,6 +300,16 @@ function SIMDetailDrawer({ sim, onClose }: { sim: SIM; onClose: () => void }) {
 function AddBatchModal({ onClose, dealerId, branches }: {
   onClose: () => void; dealerId?: number; branches: { id: number; name: string }[];
 }) {
+  const [step, setStep] = useState<"summary" | "carryforward" | "form">("summary");
+  const [batchSummary, setBatchSummary] = useState<{
+    id: number; batch_number: string; received_at: string;
+    total: number; in_stock: number; in_vans: number; with_ba: number;
+    registered: number; activated: number; lost_faulty: number; returned: number;
+  }[]>([]);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [newBatchId, setNewBatchId] = useState<number | null>(null);
+  const [carryingForward, setCarryingForward] = useState(false);
+
   const [tab, setTab]                   = useState<"single" | "range">("range");
   const [batchNumber, setBatchNumber]   = useState("");
   const [branchId, setBranchId]         = useState("");
@@ -310,14 +321,28 @@ function AddBatchModal({ onClose, dealerId, branches }: {
   const [rangeEnd, setRangeEnd]         = useState("");
   const createBatch = useCreateSIMBatch();
 
+  // Load batch summary on open
+  useEffect(() => {
+    api.get(ENDPOINTS.BATCH_SUMMARY)
+      .then(r => {
+        setBatchSummary(Array.isArray(r.data) ? r.data : []);
+        setSummaryLoading(false);
+      })
+      .catch(() => setSummaryLoading(false));
+  }, []);
+
+  const hasPreviousBatches = batchSummary.length > 0;
+  const latestBatch = batchSummary[0];
+  const unresolved = latestBatch
+    ? latestBatch.in_stock + latestBatch.in_vans + latestBatch.with_ba + latestBatch.registered
+    : 0;
+
   const rangeCount = useMemo(() => {
-      try {
-          const s = BigInt(rangeStart), e = BigInt(rangeEnd);
-          if (e < s) return null;
-          return Number(e - s + 1n);
-      } catch {
-          return null;
-      }
+    try {
+      const s = BigInt(rangeStart), e = BigInt(rangeEnd);
+      if (e < s) return null;
+      return Number(e - s + 1n);
+    } catch { return null; }
   }, [rangeStart, rangeEnd]);
 
   const handleAddSerial = () => {
@@ -334,23 +359,197 @@ function AddBatchModal({ onClose, dealerId, branches }: {
   const handleSubmit = async () => {
     if (!isValid) return;
     try {
-      await createBatch.mutateAsync({
+      const result = await createBatch.mutateAsync({
         batch_number: batchNumber.trim(), branch: Number(branchId),
         quantity: tab === "range" ? rangeCount! : serialList.length,
         serial_start: tab === "range" ? rangeStart : serialList[0],
         serial_end: tab === "range" ? rangeEnd : serialList[serialList.length - 1],
         notes: notes.trim(),
       });
-      showSuccess("Batch created successfully!"); onClose();
+      setNewBatchId(result.id);
+      // If there are unresolved SIMs from previous batch, ask carry forward
+      if (hasPreviousBatches && unresolved > 0) {
+        setStep("carryforward");
+      } else {
+        showSuccess("Batch created successfully!");
+        onClose();
+      }
     } catch { showError("Failed to create batch. Please try again."); }
   };
 
+  const handleCarryForward = async (doCarry: boolean) => {
+    if (doCarry && latestBatch && newBatchId) {
+      setCarryingForward(true);
+      try {
+        await api.post(ENDPOINTS.CARRY_FORWARD, {
+          from_batch: latestBatch.id,
+          to_batch:   newBatchId,
+        });
+        showSuccess(`${unresolved} SIMs carried forward to new batch.`);
+      } catch {
+        showError("Carry forward failed. You can do it manually later.");
+      }
+      setCarryingForward(false);
+    } else {
+      showSuccess("Batch created successfully!");
+    }
+    onClose();
+  };
+
+  // ── Step: Summary ──────────────────────────────────────────────────────────
+  if (step === "summary") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" onClick={onClose} />
+        <div className="relative w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4 sticky top-0 bg-card z-10">
+            <div className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Plus className="h-4 w-4 text-primary" />
+              </div>
+              <h3 className="font-heading text-lg font-semibold">Add New Batch</h3>
+            </div>
+            <button onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="p-6 space-y-5">
+            {summaryLoading ? (
+              <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span className="text-sm">Loading current status…</span>
+              </div>
+            ) : !hasPreviousBatches ? (
+              <div className="text-center py-8">
+                <p className="text-sm text-muted-foreground">No previous batches. Let's create your first one.</p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-1">Before you add a new batch, here's where you stand:</p>
+                  <p className="text-xs text-muted-foreground">Latest batch: <span className="text-foreground font-medium">{latestBatch.batch_number}</span></p>
+                </div>
+
+                <div className="rounded-lg border border-border bg-accent/20 divide-y divide-border">
+                  {[
+                    { label: "In Stock (branch)",    value: latestBatch.in_stock,    color: "text-blue-400",    unresolved: true  },
+                    { label: "In Vans",              value: latestBatch.in_vans,     color: "text-amber-400",   unresolved: true  },
+                    { label: "With BAs (unregistered)", value: latestBatch.with_ba,  color: "text-orange-400",  unresolved: true  },
+                    { label: "Registered (waiting Safaricom)", value: latestBatch.registered, color: "text-green-500", unresolved: true },
+                    { label: "Activated ✅",          value: latestBatch.activated,  color: "text-emerald-400", unresolved: false },
+                    { label: "Lost / Faulty ❌",      value: latestBatch.lost_faulty,color: "text-destructive", unresolved: false },
+                    { label: "Returned",             value: latestBatch.returned,   color: "text-purple-400",  unresolved: false },
+                  ].map(row => (
+                    <div key={row.label} className="flex items-center justify-between px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{row.label}</span>
+                        {row.unresolved && row.value > 0 && (
+                          <span className="text-xs bg-amber-500/15 text-amber-500 rounded-full px-1.5 py-0.5">unresolved</span>
+                        )}
+                      </div>
+                      <span className={cn("text-sm font-bold", row.color)}>{row.value.toLocaleString()}</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-accent/30">
+                    <span className="text-sm font-semibold text-foreground">Total</span>
+                    <span className="text-sm font-bold text-foreground">{latestBatch.total.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {unresolved > 0 && (
+                  <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                    <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-500">
+                      You have <span className="font-bold">{unresolved.toLocaleString()} unresolved SIMs</span> from this batch. You can carry them forward to the new batch after creating it.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button onClick={onClose} className="flex-1 rounded-md border border-border py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => setStep("form")}
+                disabled={summaryLoading}
+                className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50 hover:opacity-90 transition-opacity">
+                Continue to Add Batch
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step: Carry Forward ────────────────────────────────────────────────────
+  if (step === "carryforward") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" />
+        <div className="relative w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl p-6 space-y-5">
+          <div className="text-center space-y-2">
+            <div className="h-12 w-12 rounded-full bg-amber-500/10 flex items-center justify-center mx-auto">
+              <AlertCircle className="h-6 w-6 text-amber-500" />
+            </div>
+            <h3 className="font-heading text-lg font-semibold">Carry Forward Unresolved SIMs?</h3>
+            <p className="text-sm text-muted-foreground">
+              You have <span className="font-bold text-foreground">{unresolved.toLocaleString()} unresolved SIMs</span> from <span className="font-medium text-foreground">{latestBatch?.batch_number}</span>.
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-accent/20 divide-y divide-border text-sm">
+            {[
+              { label: "In Stock",    value: latestBatch?.in_stock   ?? 0 },
+              { label: "In Vans",     value: latestBatch?.in_vans    ?? 0 },
+              { label: "With BAs",    value: latestBatch?.with_ba    ?? 0 },
+              { label: "Registered",  value: latestBatch?.registered ?? 0 },
+            ].map(row => (
+              <div key={row.label} className="flex justify-between px-4 py-2">
+                <span className="text-muted-foreground">{row.label}</span>
+                <span className="font-medium text-foreground">{row.value.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 space-y-1">
+            <p className="text-xs font-medium text-foreground">What does carry forward mean?</p>
+            <p className="text-xs text-muted-foreground">These SIMs move to your new batch — like moving to the next class. Activated and lost SIMs stay on the old batch.</p>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleCarryForward(false)}
+              disabled={carryingForward}
+              className="flex-1 rounded-md border border-border py-2.5 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50">
+              No, Keep Separate
+            </button>
+            <button
+              onClick={() => handleCarryForward(true)}
+              disabled={carryingForward}
+              className="flex-1 flex items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-50 hover:opacity-90 transition-opacity">
+              {carryingForward && <Loader2 className="h-4 w-4 animate-spin" />}
+              {carryingForward ? "Moving…" : "Yes, Carry Forward"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step: Form ─────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-md rounded-xl border border-border bg-card shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-border px-6 py-4 sticky top-0 bg-card z-10">
           <div className="flex items-center gap-2">
+            <button onClick={() => setStep("summary")} className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
             <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
               <Plus className="h-4 w-4 text-primary" />
             </div>
@@ -363,7 +562,7 @@ function AddBatchModal({ onClose, dealerId, branches }: {
         <div className="p-6 space-y-5">
           <div>
             <label className="block text-sm font-medium text-foreground mb-1.5">Batch Number</label>
-            <input value={batchNumber} onChange={e => setBatchNumber(e.target.value)} placeholder="e.g. BATCH-2026-001"
+            <input value={batchNumber} onChange={e => setBatchNumber(e.target.value)} placeholder="e.g. BATCH-2026-002"
               className="w-full rounded-md border border-border bg-accent py-2 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
           </div>
           <div>
@@ -511,6 +710,7 @@ interface FilterBarProps {
   holderType: "ba" | "agent" | ""; onHolderType: (v: "ba" | "agent" | "") => void;
   branchFilter: string; onBranch: (v: string) => void;
   activeFilterCount: number; onClearAll: () => void;
+  onLocationClear: () => void;
 }
 
 function FilterBar({
@@ -518,7 +718,7 @@ function FilterBar({
   search, onSearch, statusFilter, onStatus,
   branchFilter, onBranch, vanFilter, onVan,
   holderFilter, onHolder, holderType, onHolderType,
-  activeFilterCount, onClearAll,
+  activeFilterCount, onClearAll, onLocationClear,
 }: FilterBarProps) {
   const { data: allBranches = [] } = useBranches(
     (role === "dealer_owner" || role === "operations_manager") ? dealerId : undefined
@@ -568,7 +768,7 @@ function FilterBar({
         <input value={search} onChange={e => onSearch(e.target.value)} placeholder="Search serial, holder, branch…"
           className="w-full rounded-md border border-border bg-accent py-2 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
       </div>
-      <select value={statusFilter} onChange={e => onStatus(e.target.value as SIMStatus | "")}
+      <select value={statusFilter} onChange={e => { onLocationClear(); onStatus(e.target.value as SIMStatus | ""); }}
         className="rounded-md border border-border bg-accent px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
         <option value="">All Statuses</option>
         <option value="in_stock">In Stock</option>
@@ -633,13 +833,14 @@ export default function SimInventory() {
   const vanTeamId = user?.van_team_id ?? null;
   const canEditDelete = CAN_EDIT_DELETE.has(role);
 
-  const [search,       setSearch]       = useState("");
-  const [statusFilter, setStatusFilter] = useState<SIMStatus | "">("");
-  const [branchFilter, setBranchFilter] = useState<string>("");
-  const [vanFilter,    setVanFilter]    = useState<string>("");
-  const [holderFilter, setHolderFilter] = useState<string>("");
-  const [holderType,   setHolderType]   = useState<"ba" | "agent" | "">("");
-  const [page,         setPage]         = useState(1);
+  const [search,        setSearch]        = useState("");
+  const [statusFilter,  setStatusFilter]  = useState<SIMStatus | "">("");
+  const [locationFilter,setLocationFilter]= useState<"branch_stock"|"van_stock"|"with_ba"|"">("");
+  const [branchFilter,  setBranchFilter]  = useState<string>("");
+  const [vanFilter,     setVanFilter]     = useState<string>("");
+  const [holderFilter,  setHolderFilter]  = useState<string>("");
+  const [holderType,    setHolderType]    = useState<"ba" | "agent" | "">("");
+  const [page,          setPage]          = useState(1);
 
   const [activeSIM,    setActiveSIM]    = useState<SIM | null>(null);
   const [showAddBatch, setShowAddBatch] = useState(false);
@@ -657,43 +858,46 @@ export default function SimInventory() {
 
   const filterParams = useMemo(() => ({
     ...scopeParams,
-    ...(statusFilter ? { status: statusFilter } : {}),
+    ...(locationFilter ? { location: locationFilter } : statusFilter ? { status: statusFilter } : {}),
     ...(branchFilter && (role === "dealer_owner" || role === "operations_manager") ? { branch: Number(branchFilter) } : {}),
     ...(vanFilter && role !== "brand_ambassador" && role !== "finance" ? { van_team: Number(vanFilter) } : {}),
     ...(holderFilter && role !== "brand_ambassador" && role !== "finance" ? { holder: Number(holderFilter) } : {}),
     ...(search.trim() ? { search: search.trim() } : {}),
     page,
-  }), [scopeParams, statusFilter, branchFilter, vanFilter, holderFilter, search, page, role]);
+  }), [scopeParams, locationFilter, statusFilter, branchFilter, vanFilter, holderFilter, search, page, role]);
 
   const { data: simsData, isLoading, isError, refetch } = useSIMs(filterParams);
   const visibleSIMs = useMemo(() => simsData?.results ?? [], [simsData?.results]);
   const totalCount  = simsData?.count ?? 0;
 
   const kpiBase = useMemo(() => ({
-  ...scopeParams,
-  ...(branchFilter && (role === "dealer_owner" || role === "operations_manager") ? { branch: Number(branchFilter) } : {}),
-  page_size: 1,
-}), [scopeParams, branchFilter, role]);
-  const { data: kpiTotal      } = useSIMs(useMemo(() => ({ ...kpiBase }),                                [kpiBase]));
-  const { data: kpiInStock    } = useSIMs(useMemo(() => ({ ...kpiBase, status: "in_stock"   as const }), [kpiBase]));
-  const { data: kpiIssued     } = useSIMs(useMemo(() => ({ ...kpiBase, status: "issued"     as const }), [kpiBase]));
-  const { data: kpiRegistered } = useSIMs(useMemo(() => ({ ...kpiBase, status: "registered" as const }), [kpiBase]));
-  const { data: kpiActivated  } = useSIMs(useMemo(() => ({ ...kpiBase, status: "activated"  as const }), [kpiBase]));
-  const { data: kpiReturned   } = useSIMs(useMemo(() => ({ ...kpiBase, status: "returned"   as const }), [kpiBase]));
+    ...scopeParams,
+    ...(branchFilter && (role === "dealer_owner" || role === "operations_manager") ? { branch: Number(branchFilter) } : {}),
+    page_size: 1,
+  }), [scopeParams, branchFilter, role]);
+
+  const { data: kpiTotal       } = useSIMs(useMemo(() => ({ ...kpiBase }),                                          [kpiBase]));
+  const { data: kpiBranchStock } = useSIMs(useMemo(() => ({ ...kpiBase, location: "branch_stock" as const }),       [kpiBase]));
+  const { data: kpiVanStock    } = useSIMs(useMemo(() => ({ ...kpiBase, location: "van_stock"    as const }),       [kpiBase]));
+  const { data: kpiWithBA      } = useSIMs(useMemo(() => ({ ...kpiBase, location: "with_ba"      as const }),       [kpiBase]));
+  const { data: kpiRegistered  } = useSIMs(useMemo(() => ({ ...kpiBase, status: "registered" as const }),           [kpiBase]));
+  const { data: kpiActivated   } = useSIMs(useMemo(() => ({ ...kpiBase, status: "activated"  as const }),           [kpiBase]));
+  const { data: kpiReturned    } = useSIMs(useMemo(() => ({ ...kpiBase, status: "returned"   as const }),           [kpiBase]));
 
   const kpis = useMemo(() => ({
-    total:      kpiTotal?.count      ?? 0,
-    in_stock:   kpiInStock?.count    ?? 0,
-    issued:     kpiIssued?.count     ?? 0,
-    registered: kpiRegistered?.count ?? 0,
-    activated:  kpiActivated?.count  ?? 0,
-    returned:   kpiReturned?.count   ?? 0,
-  }), [kpiTotal, kpiInStock, kpiIssued, kpiRegistered, kpiActivated, kpiReturned]);
+    total:        kpiTotal?.count       ?? 0,
+    branch_stock: kpiBranchStock?.count ?? 0,
+    van_stock:    kpiVanStock?.count    ?? 0,
+    with_ba:      kpiWithBA?.count      ?? 0,
+    registered:   kpiRegistered?.count  ?? 0,
+    activated:    kpiActivated?.count   ?? 0,
+    returned:     kpiReturned?.count    ?? 0,
+  }), [kpiTotal, kpiBranchStock, kpiVanStock, kpiWithBA, kpiRegistered, kpiActivated, kpiReturned]);
 
   const { data: allBranches = [] } = useBranches(CAN_ADD_STOCK.has(role) ? dealerId : undefined);
-  const activeFilterCount = [statusFilter, branchFilter, vanFilter, holderFilter, search].filter(Boolean).length;
+  const activeFilterCount = [statusFilter, locationFilter, branchFilter, vanFilter, holderFilter, search].filter(Boolean).length;
   const clearAllFilters = () => handleFilterChange(() => {
-    setSearch(""); setStatusFilter(""); setBranchFilter(""); setVanFilter(""); setHolderFilter(""); setHolderType("");
+    setSearch(""); setStatusFilter(""); setLocationFilter(""); setBranchFilter(""); setVanFilter(""); setHolderFilter(""); setHolderType("");
   });
   const viewerUserId = user?.id ? Number(user.id) : undefined;
 
@@ -764,22 +968,51 @@ export default function SimInventory() {
       {(() => {
         const stockLabel = role === "branch_manager" ? "At Branch" : role === "van_team_leader" ? "In My Van" : "In Stock";
         const issuedLabel = role === "branch_manager" || role === "van_team_leader" ? "Issued Out" : "Issued";
-        const kpiCards = [
-          { label: "Total",       value: kpis.total,      color: "text-foreground", bg: "bg-accent/30"     },
-          { label: stockLabel,    value: kpis.in_stock,   color: "text-blue-400",   bg: "bg-blue-500/10"   },
-          { label: issuedLabel,   value: kpis.issued,     color: "text-amber-500",  bg: "bg-amber-500/10"  },
-          { label: "Registered",  value: kpis.registered, color: "text-green-500",  bg: "bg-green-500/10"  },
-          { label: "Activated",   value: kpis.activated,  color: "text-blue-500",   bg: "bg-blue-500/10"   },
-          { label: "Returned",    value: kpis.returned,   color: "text-purple-400", bg: "bg-purple-500/10" },
+        const kpiCards = role === "dealer_owner" || role === "operations_manager" ? [
+          { label: "Total",      value: kpis.total,        color: "text-foreground",  bg: "bg-accent/30",       locationKey: "",             statusKey: ""           },
+          { label: "In Stock",   value: kpis.branch_stock, color: "text-blue-400",    bg: "bg-blue-500/10",     locationKey: "branch_stock", statusKey: ""           },
+          { label: "In Vans",    value: kpis.van_stock,    color: "text-amber-400",   bg: "bg-amber-500/10",    locationKey: "van_stock",    statusKey: ""           },
+          { label: "With BAs",   value: kpis.with_ba,      color: "text-orange-400",  bg: "bg-orange-500/10",   locationKey: "with_ba",      statusKey: ""           },
+          { label: "Registered", value: kpis.registered,   color: "text-green-500",   bg: "bg-green-500/10",    locationKey: "",             statusKey: "registered" },
+          { label: "Activated",  value: kpis.activated,    color: "text-emerald-400", bg: "bg-emerald-500/10",  locationKey: "",             statusKey: "activated"  },
+          { label: "Returned",   value: kpis.returned,     color: "text-purple-400",  bg: "bg-purple-500/10",   locationKey: "",             statusKey: "returned"   },
+        ] : [
+          { label: "Total",      value: kpis.total,        color: "text-foreground",  bg: "bg-accent/30",       locationKey: "",             statusKey: ""           },
+          { label: stockLabel,   value: kpis.branch_stock, color: "text-blue-400",    bg: "bg-blue-500/10",     locationKey: "branch_stock", statusKey: ""           },
+          { label: issuedLabel,  value: kpis.with_ba,      color: "text-amber-500",   bg: "bg-amber-500/10",    locationKey: "with_ba",      statusKey: ""           },
+          { label: "Registered", value: kpis.registered,   color: "text-green-500",   bg: "bg-green-500/10",    locationKey: "",             statusKey: "registered" },
+          { label: "Activated",  value: kpis.activated,    color: "text-emerald-400", bg: "bg-emerald-500/10",  locationKey: "",             statusKey: "activated"  },
+          { label: "Returned",   value: kpis.returned,     color: "text-purple-400",  bg: "bg-purple-500/10",   locationKey: "",             statusKey: "returned"   },
         ];
-        return (
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            {kpiCards.map(({ label, value, color, bg }) => (
-              <div key={label} className={cn("rounded-xl border border-border p-4", bg)}>
-                <p className="text-xs text-muted-foreground">{label}</p>
-                <p className={cn("text-2xl font-bold mt-1 font-heading", color)}>{isLoading ? "—" : value.toLocaleString()}</p>
-              </div>
-            ))}
+return (
+          <div className={cn("grid grid-cols-2 gap-3", (role === "dealer_owner" || role === "operations_manager") ? "lg:grid-cols-7" : "lg:grid-cols-6")}>
+            {kpiCards.map(({ label, value, color, bg, locationKey, statusKey }) => {
+              const isActive =
+                (locationKey && locationFilter === locationKey) ||
+                (statusKey && statusFilter === statusKey && !locationFilter) ||
+                (!locationKey && !statusKey && !locationFilter && !statusFilter);
+              return (
+                <div
+                  key={label}
+                  onClick={() => handleFilterChange(() => {
+                    setLocationFilter("");
+                    setStatusFilter("");
+                    if (locationKey) setLocationFilter(locationKey as typeof locationFilter);
+                    else if (statusKey) setStatusFilter(statusKey as SIMStatus);
+                  })}
+                  className={cn(
+                    "rounded-xl border p-4 cursor-pointer transition-all",
+                    bg,
+                    isActive ? "border-primary ring-1 ring-primary" : "border-border hover:border-primary/50"
+                  )}
+                >
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  <p className={cn("text-2xl font-bold mt-1 font-heading", color)}>
+                    {isLoading ? "—" : value.toLocaleString()}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         );
       })()}
@@ -794,6 +1027,7 @@ export default function SimInventory() {
         holderFilter={holderFilter} onHolder={v => handleFilterChange(() => setHolderFilter(v))}
         holderType={holderType}     onHolderType={v => handleFilterChange(() => setHolderType(v))}
         activeFilterCount={activeFilterCount} onClearAll={clearAllFilters}
+        onLocationClear={() => handleFilterChange(() => setLocationFilter(""))}
       />
 
       {/* Bulk action toolbar */}

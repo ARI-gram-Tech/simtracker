@@ -15,6 +15,8 @@ from .views import (
     ResolveLostSIMsView,
     ResolveRegisterSIMsView,
     ResolveFaultySIMsView,
+    BatchSummaryView,
+    CarryForwardView
 )
 
 urlpatterns = [
@@ -51,4 +53,10 @@ urlpatterns = [
          SIMMovementListView.as_view(),    name="sim_movements"),
     path("<str:serial_number>/",
          SIMDetailView.as_view(),          name="sim_detail"),
+
+    # ── Summary and carry-forward paths last ─────────────────────────────────
+    path("batches/summary/",
+         BatchSummaryView.as_view(),  name="batch_summary"),
+    path("batches/carry-forward/",
+         CarryForwardView.as_view(),  name="carry_forward"),
 ]

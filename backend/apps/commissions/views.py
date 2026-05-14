@@ -90,6 +90,23 @@ class CommissionCycleListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         dealer = _get_user_dealer(self.request.user)
+
+        # ── Overlap guard ──────────────────────────────────────────────────
+        start = serializer.validated_data.get("start_date")
+        end = serializer.validated_data.get("end_date")
+        if dealer and start and end:
+            overlap = CommissionCycle.objects.filter(
+                dealer=dealer,
+                start_date__lte=end,
+                end_date__gte=start,
+            ).exists()
+            if overlap:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError(
+                    "A cycle already exists that overlaps these dates. "
+                    "Close or adjust the existing cycle first."
+                )
+
         if dealer:
             serializer.save(dealer=dealer)
         else:
@@ -392,7 +409,7 @@ class GenerateCycleRecordsView(APIView):
 
         from apps.reconciliation.models import ReconciliationRecord, SafaricomReport
         from apps.inventory.models import SIM
-        from django.db.models import Count, Q
+        from django.db.models import Count
 
         reports = SafaricomReport.objects.filter(
             status="done",
@@ -400,80 +417,95 @@ class GenerateCycleRecordsView(APIView):
             processed_at__date__lte=cycle.end_date,
         )
 
+        # ── Deduplicate serial numbers per BA per result ───────────────────
+        # Pull distinct (ba, result, serial) so the same SIM in two reports
+        # is only counted once.
         recon_rows = (
             ReconciliationRecord.objects
             .filter(report__in=reports, identified_ba__isnull=False)
             .exclude(result="ghost_sim")
-            .values("identified_ba", "result")
-            .annotate(cnt=Count("id"))
+            .values("identified_ba", "result", "serial_number")
+            .distinct()
         )
 
         ba_data = {}
         for row in recon_rows:
             bid = row["identified_ba"]
             if bid not in ba_data:
-                ba_data[bid] = {"payable": 0, "rejected": 0,
-                                "fraud": 0, "disputed": 0}
+                ba_data[bid] = {
+                    "payable": set(), "rejected": set(),
+                    "fraud": set(), "disputed": set(),
+                }
             r = row["result"]
+            serial = row["serial_number"]
             if r == "payable":
-                ba_data[bid]["payable"] += row["cnt"]
+                ba_data[bid]["payable"].add(serial)
             elif r == "rejected":
-                ba_data[bid]["rejected"] += row["cnt"]
+                ba_data[bid]["rejected"].add(serial)
             elif r == "fraud":
-                ba_data[bid]["fraud"] += row["cnt"]
+                ba_data[bid]["fraud"].add(serial)
             elif r == "disputed":
-                ba_data[bid]["disputed"] += row["cnt"]
-            elif r == "ghost_sim":
-                ba_data[bid]["ghost"] = ba_data[bid].get(
-                    "ghost", 0) + row["cnt"]
+                ba_data[bid]["disputed"].add(serial)
 
         created = 0
         updated = 0
+
         for bid, data in ba_data.items():
             from apps.accounts.models import User as UserModel
             try:
                 ba = UserModel.objects.get(id=bid, dealer_org=dealer)
             except UserModel.DoesNotExist:
-                # Skip BAs not belonging to this dealer
                 continue
 
             internal_reg = SIM.objects.filter(
                 current_holder=ba, status=SIM.Status.REGISTERED
             ).count()
-            active = data["payable"]
+
+            active = len(data["payable"])
             gross = round(active * rate, 2)
+
+            # ── Deductions scoped to THIS cycle only ───────────────────────
+            from django.db.models import Sum
+            ba_deductions = DeductionRecord.objects.filter(
+                agent=ba,
+                status="approved",
+                settlement_mode="commission_deduction",
+                settlement_cycle=cycle,          # ← only this cycle
+            ).aggregate(total=Sum("amount"))["total"] or 0
+            net = round(gross - float(ba_deductions), 2)
 
             existing = CommissionRecord.objects.filter(
                 cycle=cycle, agent=ba).first()
             if existing:
-                if existing.status in ["pending"]:
+                if existing.status == "pending":
                     existing.claimed_sims = internal_reg
                     existing.active_sims = active
-                    existing.rejected_sims = data["rejected"]
-                    existing.fraud_sims = data["fraud"]
-                    existing.disputed_sims = data["disputed"]
+                    existing.rejected_sims = len(data["rejected"])
+                    existing.fraud_sims = len(data["fraud"])
+                    existing.disputed_sims = len(data["disputed"])
                     existing.not_in_report_sims = max(0, internal_reg - active)
                     existing.rate_per_sim = rate
                     existing.gross_amount = gross
-                    existing.deductions = 0
-                    existing.net_amount = gross
+                    existing.deductions = ba_deductions
+                    existing.net_amount = net
                     existing.save()
                     updated += 1
+                # if approved/paid — skip, never overwrite
             else:
                 CommissionRecord.objects.create(
                     cycle=cycle,
                     agent=ba,
                     claimed_sims=internal_reg,
                     active_sims=active,
-                    rejected_sims=data["rejected"],
-                    fraud_sims=data["fraud"],
-                    disputed_sims=data["disputed"],
+                    rejected_sims=len(data["rejected"]),
+                    fraud_sims=len(data["fraud"]),
+                    disputed_sims=len(data["disputed"]),
                     not_in_report_sims=max(0, internal_reg - active),
                     not_in_inventory_sims=0,
                     rate_per_sim=rate,
                     gross_amount=gross,
-                    deductions=0,
-                    net_amount=gross,
+                    deductions=ba_deductions,
+                    net_amount=net,
                     status="pending",
                 )
                 created += 1
@@ -634,6 +666,22 @@ class ApproveDeductionView(APIView):
         record.approved_at = timezone.now()
         record.save()
 
+        from django.db.models import Sum
+        commission = CommissionRecord.objects.filter(
+            agent=record.agent,
+            status="pending",
+        ).first()
+        if commission:
+            total_deductions = DeductionRecord.objects.filter(
+                agent=record.agent,
+                status="approved",
+                settlement_mode="commission_deduction",
+                settlement_cycle=commission.cycle,   # ← add this line
+            ).aggregate(total=Sum("amount"))["total"] or 0
+            commission.deductions = total_deductions
+            commission.net_amount = round(
+                float(commission.gross_amount) - float(total_deductions), 2)
+            commission.save()
         from apps.notifications.models import Notification
         Notification.objects.create(
             recipient=record.agent,

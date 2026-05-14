@@ -197,3 +197,11 @@ export function useBASimBreakdown(params: { ba_id: number; start_date?: string; 
     staleTime: 30_000,
   });
 }
+
+export function useAgentApprovedDeductions(agentId?: number) {
+  return useQuery({
+    queryKey: ["agentDeductions", agentId],
+    queryFn:  () => commissionsService.listAgentApprovedDeductions(agentId!),
+    enabled:  !!agentId,
+  });
+}
