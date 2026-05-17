@@ -7,7 +7,7 @@ import type {
   CreateCommissionCycleRequest,
   CreateCommissionRecordRequest, ApproveCommissionRequest,
   CreatePayoutRequest, CommissionRecordFilterParams,
-  DeductionRule, BASimBreakdownResponse
+  DeductionRule, BASimBreakdownResponse, CycleAvailableReport
 } from "@/types/commissions.types";
 
 export const commissionsService = {
@@ -69,12 +69,9 @@ export const commissionsService = {
 
   // ── Records ────────────────────────────────────────────────────────────────
   listRecords: (params?: CommissionRecordFilterParams) =>
-    api.get<{ count: number; results: CommissionRecord[] }>(ENDPOINTS.COMMISSION_RECORDS, { params })
-    .then(r => {
-      const data = r.data as unknown;
-      if (Array.isArray(data)) return data as CommissionRecord[];
-      return (data as { results: CommissionRecord[] }).results ?? [];
-    }),
+    api.get<{ count: number; next: string | null; previous: string | null; results: CommissionRecord[] }>(
+      ENDPOINTS.COMMISSION_RECORDS, { params }
+    ).then(r => r.data),
     
   getRecord: (id: number) =>
     api.get<CommissionRecord>(`${ENDPOINTS.COMMISSION_RECORDS}${id}/`).then(r => r.data),
@@ -118,4 +115,11 @@ export const commissionsService = {
 
   getBASimBreakdown: (params: { ba_id: number; start_date?: string; end_date?: string }) =>
     api.get<BASimBreakdownResponse>(ENDPOINTS.BA_SIM_BREAKDOWN, { params }).then(r => r.data),
+
+  getAvailableReportsForCycle: (cycleId: number) =>
+    api.get<CycleAvailableReport[]>(ENDPOINTS.CYCLE_AVAILABLE_REPORTS(cycleId)).then(r => r.data),
+
+  generateCycleRecords: (cycleId: number, reportIds: number[]) =>
+    api.post(ENDPOINTS.GENERATE_CYCLE_RECORDS(cycleId), { report_ids: reportIds }).then(r => r.data),
 };
+

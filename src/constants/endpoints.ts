@@ -60,7 +60,8 @@ export const ENDPOINTS = {
   // ── Commissions ─────────────────────────────────────────────────────────────
   COMMISSION_RULES:       `${BASE_URL}/commissions/rules/`,
   COMMISSION_CYCLES:      `${BASE_URL}/commissions/cycles/`,
-  GENERATE_CYCLE_RECORDS: (id: number) => `${BASE_URL}/commissions/cycles/${id}/generate/`,
+  GENERATE_CYCLE_RECORDS:   (id: number) => `${BASE_URL}/commissions/cycles/${id}/generate/`,
+  CYCLE_AVAILABLE_REPORTS:  (id: number) => `${BASE_URL}/commissions/cycles/${id}/available-reports/`,
   COMMISSION_RECORDS:     `${BASE_URL}/commissions/records/`,
   APPROVE_COMMISSION:     (id: number) => `${BASE_URL}/commissions/records/${id}/approve/`,
   REJECT_COMMISSION:      (id: number) => `${BASE_URL}/commissions/records/${id}/reject/`,

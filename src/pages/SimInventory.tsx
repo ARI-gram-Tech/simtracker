@@ -1,6 +1,9 @@
 // src/pages/SimInventory.tsx
 // Full inventory page — adds Edit modal, single/bulk delete for owner/ops/super_admin
-import { useState, useMemo, useEffect } from "react";
+// FIXES:
+//   1. Download button respects active filters — exports filtered SIMs as CSV
+//   2. BA/Agent dropdowns now fetch all users (page_size=1000) instead of first page only
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Search, Download, Eye, Layers, Plus, X, ChevronRight,
   AlertCircle, Loader2, RefreshCw, ArrowRightLeft,
@@ -84,6 +87,42 @@ const PAGE_TITLE: Record<string, string> = {
   finance:            "SIM Inventory",
 };
 
+// ─── CSV Export Helper ────────────────────────────────────────────────────────
+
+// Columns that must be forced as text in Excel to prevent scientific notation
+// or leading-zero stripping. Values are wrapped with ="..." so Excel preserves them.
+const TEXT_FORCE_COLUMNS = new Set(["Serial Number", "Batch ID"]);
+
+function escapeCsv(val: unknown, colName?: string): string {
+  const s = val === null || val === undefined ? "" : String(val);
+  // Force text format for serial/ID columns — Excel reads ="12345" as literal text
+  if (colName && TEXT_FORCE_COLUMNS.has(colName) && s !== "" && s !== "—") {
+    return `="` + s.replace(/"/g, '""') + `"`;
+  }
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function downloadCsv(rows: Record<string, unknown>[], filename: string) {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const lines = [
+    headers.join(","),
+    ...rows.map(r => headers.map(h => escapeCsv(r[h], h)).join(",")),
+  ];
+  // UTF-8 BOM ensures Excel opens with correct encoding
+  const bom = "\uFEFF";
+  const blob = new Blob([bom + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── SIM Status Badge ─────────────────────────────────────────────────────────
 
 function SIMStatusBadge({ label, colorClass }: { label: string; colorClass: string }) {
@@ -111,10 +150,10 @@ function getDisplayStatus(
     if (raw === "issued") return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
   }
   if (viewerRole === "van_team_leader") {
-      if (raw === "in_stock" && sim.van_team === viewerVanTeamId) 
-          return { label: "In My Van", colorClass: STATUS_COLORS.in_stock };
-      if (raw === "issued")   // ← this catches BAs' SIMs, not van stock
-          return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
+    if (raw === "in_stock" && sim.van_team === viewerVanTeamId)
+      return { label: "In My Van", colorClass: STATUS_COLORS.in_stock };
+    if (raw === "issued")
+      return { label: "Issued Out", colorClass: STATUS_COLORS.issued };
   }
   if (viewerRole === "brand_ambassador" || viewerRole === "external_agent") {
     if (raw === "issued" && sim.current_holder === viewerUserId) return { label: "In My Hands", colorClass: STATUS_COLORS.issued };
@@ -321,7 +360,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
   const [rangeEnd, setRangeEnd]         = useState("");
   const createBatch = useCreateSIMBatch();
 
-  // Load batch summary on open
   useEffect(() => {
     api.get(ENDPOINTS.BATCH_SUMMARY)
       .then(r => {
@@ -367,7 +405,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
         notes: notes.trim(),
       });
       setNewBatchId(result.id);
-      // If there are unresolved SIMs from previous batch, ask carry forward
       if (hasPreviousBatches && unresolved > 0) {
         setStep("carryforward");
       } else {
@@ -396,7 +433,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
     onClose();
   };
 
-  // ── Step: Summary ──────────────────────────────────────────────────────────
   if (step === "summary") {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -430,7 +466,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
                   <p className="text-sm font-medium text-foreground mb-1">Before you add a new batch, here's where you stand:</p>
                   <p className="text-xs text-muted-foreground">Latest batch: <span className="text-foreground font-medium">{latestBatch.batch_number}</span></p>
                 </div>
-
                 <div className="rounded-lg border border-border bg-accent/20 divide-y divide-border">
                   {[
                     { label: "In Stock (branch)",    value: latestBatch.in_stock,    color: "text-blue-400",    unresolved: true  },
@@ -456,7 +491,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
                     <span className="text-sm font-bold text-foreground">{latestBatch.total.toLocaleString()}</span>
                   </div>
                 </div>
-
                 {unresolved > 0 && (
                   <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                     <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
@@ -467,7 +501,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
                 )}
               </>
             )}
-
             <div className="flex gap-2 pt-1">
               <button onClick={onClose} className="flex-1 rounded-md border border-border py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors">
                 Cancel
@@ -485,7 +518,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
     );
   }
 
-  // ── Step: Carry Forward ────────────────────────────────────────────────────
   if (step === "carryforward") {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -500,7 +532,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
               You have <span className="font-bold text-foreground">{unresolved.toLocaleString()} unresolved SIMs</span> from <span className="font-medium text-foreground">{latestBatch?.batch_number}</span>.
             </p>
           </div>
-
           <div className="rounded-lg border border-border bg-accent/20 divide-y divide-border text-sm">
             {[
               { label: "In Stock",    value: latestBatch?.in_stock   ?? 0 },
@@ -514,12 +545,10 @@ function AddBatchModal({ onClose, dealerId, branches }: {
               </div>
             ))}
           </div>
-
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 space-y-1">
             <p className="text-xs font-medium text-foreground">What does carry forward mean?</p>
             <p className="text-xs text-muted-foreground">These SIMs move to your new batch — like moving to the next class. Activated and lost SIMs stay on the old batch.</p>
           </div>
-
           <div className="flex gap-2">
             <button
               onClick={() => handleCarryForward(false)}
@@ -540,7 +569,6 @@ function AddBatchModal({ onClose, dealerId, branches }: {
     );
   }
 
-  // ── Step: Form ─────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" onClick={onClose} />
@@ -738,21 +766,33 @@ function FilterBar({
     return [];
   }, [role, managerVanTeams, branchVanTeams, branchFilter]);
 
+  // FIX: Added page_size=1000 to fetch ALL BAs/agents, not just first page
   const baParams = useMemo(() => {
-    const base = { role: "brand_ambassador" as const, ...(dealerId ? { dealer_id: dealerId } : {}) };
+    const base = {
+      role: "brand_ambassador" as const,
+      page_size: 1000,
+      ...(dealerId ? { dealer_id: dealerId } : {}),
+    };
     if (role === "branch_manager" && vanFilter) return { ...base, van_team: Number(vanFilter) };
     if (role === "van_team_leader" && vanTeamId) return { ...base, van_team: vanTeamId };
     return base;
   }, [role, dealerId, vanFilter, vanTeamId]);
+
   const { data: baData } = useUsers((role !== "brand_ambassador" && role !== "finance") ? baParams : undefined);
   const baUsers = baData?.results ?? [];
 
+  // FIX: Added page_size=1000 to fetch ALL agents, not just first page
   const agentParams = useMemo(() => {
-    const base = { role: "external_agent" as const, ...(dealerId ? { dealer_id: dealerId } : {}) };
+    const base = {
+      role: "external_agent" as const,
+      page_size: 1000,
+      ...(dealerId ? { dealer_id: dealerId } : {}),
+    };
     if (role === "branch_manager" && vanFilter) return { ...base, van_team: Number(vanFilter) };
     if (role === "van_team_leader" && vanTeamId) return { ...base, van_team: vanTeamId };
     return base;
   }, [role, dealerId, vanFilter, vanTeamId]);
+
   const { data: agentData } = useUsers((role !== "brand_ambassador" && role !== "finance") ? agentParams : undefined);
   const agentUsers = agentData?.results ?? [];
   const holderOptions = holderType === "ba" ? baUsers : agentUsers;
@@ -795,18 +835,18 @@ function FilterBar({
           {vanOptions.map(v => <option key={v.id} value={String(v.id)}>{v.name}</option>)}
         </select>
       )}
-      {showHolderFilters && (
+      {showHolderFilters && (baUsers.length > 0 || agentUsers.length > 0) && (
         <select value={holderType} onChange={e => { onHolderType(e.target.value as "ba" | "agent" | ""); onHolder(""); }}
           className="rounded-md border border-border bg-accent px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
           <option value="">All Holders</option>
-          {baUsers.length > 0    && <option value="ba">Brand Ambassadors</option>}
-          {agentUsers.length > 0 && <option value="agent">External Agents</option>}
+          {baUsers.length > 0    && <option value="ba">Brand Ambassadors ({baUsers.length})</option>}
+          {agentUsers.length > 0 && <option value="agent">External Agents ({agentUsers.length})</option>}
         </select>
       )}
       {showHolderFilters && holderType && holderOptions.length > 0 && (
         <select value={holderFilter} onChange={e => onHolder(e.target.value)}
           className="rounded-md border border-border bg-accent px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="">— All {holderType === "ba" ? "Ambassadors" : "Agents"} —</option>
+          <option value="">— All {holderType === "ba" ? "Ambassadors" : "Agents"} ({holderOptions.length}) —</option>
           {holderOptions.map(u => (
             <option key={u.id} value={String(u.id)}>{`${u.first_name} ${u.last_name}`.trim() || u.email}</option>
           ))}
@@ -841,6 +881,7 @@ export default function SimInventory() {
   const [holderFilter,  setHolderFilter]  = useState<string>("");
   const [holderType,    setHolderType]    = useState<"ba" | "agent" | "">("");
   const [page,          setPage]          = useState(1);
+  const [isExporting,   setIsExporting]   = useState(false);
 
   const [activeSIM,    setActiveSIM]    = useState<SIM | null>(null);
   const [showAddBatch, setShowAddBatch] = useState(false);
@@ -940,6 +981,66 @@ export default function SimInventory() {
     } catch { showError("Failed to delete SIM(s). Please try again."); }
   };
 
+  // ── FIX: Download — fetches ALL pages matching current filters and exports CSV ──
+  const handleExport = useCallback(async () => {
+    setIsExporting(true);
+    try {
+      // Build the same filter params but without pagination, and request all results
+      const exportParams: Record<string, string | number> = {
+        ...scopeParams,
+        ...(locationFilter ? { location: locationFilter } : statusFilter ? { status: statusFilter } : {}),
+        ...(branchFilter && (role === "dealer_owner" || role === "operations_manager") ? { branch: Number(branchFilter) } : {}),
+        ...(vanFilter && role !== "brand_ambassador" && role !== "finance" ? { van_team: Number(vanFilter) } : {}),
+        ...(holderFilter && role !== "brand_ambassador" && role !== "finance" ? { holder: Number(holderFilter) } : {}),
+        ...(search.trim() ? { search: search.trim() } : {}),
+        page_size: 10000, // fetch all matching records
+        page: 1,
+      };
+
+      const params = new URLSearchParams(
+        Object.entries(exportParams).map(([k, v]) => [k, String(v)])
+      );
+
+      const response = await api.get(`${ENDPOINTS.SIMS}?${params.toString()}`);
+      const allSIMs: SIM[] = response.data?.results ?? response.data ?? [];
+
+      if (!allSIMs.length) {
+        showError("No SIMs to export with the current filters.");
+        return;
+      }
+
+      const rows = allSIMs.map(sim => ({
+        "Serial Number":  sim.serial_number,
+        "Status":         STATUS_LABELS[sim.status] ?? sim.status,
+        "Current Holder": sim.current_holder_details
+          ? `${sim.current_holder_details.first_name} ${sim.current_holder_details.last_name}`.trim()
+          : sim.van_team_details?.name ?? sim.branch_details?.name ?? "—",
+        "Holder Role":    sim.current_holder_details?.role?.replace(/_/g, " ") ?? (sim.van_team_details ? "Van Stock" : sim.branch_details ? "Branch Stock" : "Warehouse"),
+        "Branch":         sim.branch_details?.name ?? "—",
+        "Van Team":       sim.van_team_details?.name ?? "—",
+        "Batch ID":       sim.batch ?? "—",
+        "Added":          new Date(sim.created_at).toLocaleDateString("en-KE"),
+        "Last Updated":   new Date(sim.updated_at).toLocaleDateString("en-KE"),
+      }));
+
+      // Build a human-readable filename reflecting active filters
+      const filterParts: string[] = [];
+      if (statusFilter) filterParts.push(statusFilter);
+      if (locationFilter) filterParts.push(locationFilter);
+      if (search) filterParts.push(`search-${search}`);
+      const filterSuffix = filterParts.length ? `_${filterParts.join("_")}` : "";
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const filename = `sim_inventory${filterSuffix}_${dateStr}.csv`;
+
+      downloadCsv(rows, filename);
+      showSuccess(`Exported ${allSIMs.length} SIM${allSIMs.length !== 1 ? "s" : ""} to CSV.`);
+    } catch {
+      showError("Export failed. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [scopeParams, locationFilter, statusFilter, branchFilter, vanFilter, holderFilter, search, role]);
+
   return (
     <div className="space-y-6">
 
@@ -958,8 +1059,17 @@ export default function SimInventory() {
               <Plus className="h-4 w-4" /> Add Batch
             </button>
           )}
-          <button className="btn-press flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors">
-            <Download className="h-4 w-4" /> Export
+          {/* FIX: Export button — fetches filtered results and downloads as CSV */}
+          <button
+            onClick={handleExport}
+            disabled={isExporting || isLoading || totalCount === 0}
+            className="btn-press flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={totalCount > 0 ? `Export ${totalCount.toLocaleString()} SIMs${activeFilterCount > 0 ? " (filtered)" : ""}` : "No SIMs to export"}
+          >
+            {isExporting
+              ? <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
+              : <><Download className="h-4 w-4" /> Export{activeFilterCount > 0 ? ` (${totalCount.toLocaleString()})` : ""}</>
+            }
           </button>
         </div>
       </div>
@@ -984,7 +1094,7 @@ export default function SimInventory() {
           { label: "Activated",  value: kpis.activated,    color: "text-emerald-400", bg: "bg-emerald-500/10",  locationKey: "",             statusKey: "activated"  },
           { label: "Returned",   value: kpis.returned,     color: "text-purple-400",  bg: "bg-purple-500/10",   locationKey: "",             statusKey: "returned"   },
         ];
-return (
+        return (
           <div className={cn("grid grid-cols-2 gap-3", (role === "dealer_owner" || role === "operations_manager") ? "lg:grid-cols-7" : "lg:grid-cols-6")}>
             {kpiCards.map(({ label, value, color, bg, locationKey, statusKey }) => {
               const isActive =
@@ -1158,14 +1268,11 @@ return (
                               <Eye className="h-3.5 w-3.5" />
                             </button>
                             {canEditDelete && (
-                              <>
-                                
-                                <button onClick={() => setDeleteTarget([sim.serial_number])}
-                                  className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors border border-border hover:border-destructive/30"
-                                  title="Delete SIM">
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </>
+                              <button onClick={() => setDeleteTarget([sim.serial_number])}
+                                className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors border border-border hover:border-destructive/30"
+                                title="Delete SIM">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             )}
                           </div>
                         </td>

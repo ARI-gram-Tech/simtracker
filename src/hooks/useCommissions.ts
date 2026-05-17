@@ -6,6 +6,7 @@ import type {
   CreateCommissionCycleRequest,
   CreateCommissionRecordRequest, ApproveCommissionRequest,
   CreatePayoutRequest, CommissionRecordFilterParams,
+  CommissionRecord, PaginatedResponse,
   DeductionRule
 } from "@/types/commissions.types";
 
@@ -93,7 +94,7 @@ export function useCloseCycle() {
 // ── Records ──────────────────────────────────────────────────────────────────
 
 export function useCommissionRecords(params?: CommissionRecordFilterParams) {
-  return useQuery({
+  return useQuery<PaginatedResponse<CommissionRecord>>({
     queryKey: ["commissionRecords", params],
     queryFn:  () => commissionsService.listRecords(params),
   });
@@ -205,3 +206,12 @@ export function useAgentApprovedDeductions(agentId?: number) {
     enabled:  !!agentId,
   });
 }
+
+export function useAvailableReportsForCycle(cycleId: number | null) {
+  return useQuery({
+    queryKey: ["cycleAvailableReports", cycleId],
+    queryFn:  () => commissionsService.getAvailableReportsForCycle(cycleId!),
+    enabled:  cycleId != null,
+  });
+}
+

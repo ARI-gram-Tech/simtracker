@@ -36,6 +36,11 @@ class CommissionCycle(models.Model):
                                null=True, blank=True, related_name="commission_cycles")
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.OPEN)
+    used_report_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Audit trail: IDs of Safaricom reports used when generating commission records.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

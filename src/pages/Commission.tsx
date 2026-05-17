@@ -2,13 +2,12 @@
 // Full commission management page: Rules (read), Cycles, Records, Payouts
 // Role-gated: BA gets personal view, Van/Branch get scoped records, Owner/Finance/Ops get full access
 
-import { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { StatusBadge } from "@/components/StatusBadge";
 import { showSuccess, showError } from "@/lib/toast";
-import { ENDPOINTS } from "@/constants/endpoints";
-import api from "@/lib/api";
+import { commissionsService } from "@/api/commissions.service";
 import {
   useCommissionRules,
   useCommissionCycles,
@@ -23,8 +22,9 @@ import {
   useDeductionRules,
   useBASimBreakdown,
   useAgentApprovedDeductions,
+  useAvailableReportsForCycle,
 } from "@/hooks/useCommissions";
-import type { CommissionCycle, CommissionRecord, BASimBreakdownResponse, BASimRow } from "@/types/commissions.types";
+import type { CommissionCycle, CommissionRecord, BASimBreakdownResponse, BASimRow, CycleAvailableReport, PaginatedResponse } from "@/types/commissions.types";
 import {
   Loader2, AlertCircle, Plus, X, DollarSign,
   CheckCircle2, XCircle, Clock, CreditCard,
@@ -381,11 +381,184 @@ function PayoutDialog({
   );
 }
 
+// ── Generate Records Modal ────────────────────────────────────────────────────
+
+function GenerateRecordsModal({
+  cycle,
+  onClose,
+  onSuccess,
+}: {
+  cycle: CommissionCycle;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const { data: reports = [], isLoading, isError } = useAvailableReportsForCycle(cycle.id);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [generating, setGenerating] = useState(false);
+
+  // Pre-select all unlocked reports once they load
+  useEffect(() => {
+    if (reports.length) {
+      const unlockedIds = reports.filter((r) => !r.is_locked).map((r) => r.id);
+      setSelected(new Set(unlockedIds));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectableIds = reports.filter(r => !r.is_locked).map(r => r.id);
+  const allSelected   = selectableIds.length > 0 && selectableIds.every(id => selected.has(id));
+
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(selectableIds));
+  };
+
+  const toggle = (id: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleGenerate = async () => {
+    if (selected.size === 0) { showError("Select at least one report."); return; }
+    setGenerating(true);
+    try {
+      const res = await commissionsService.generateCycleRecords(cycle.id, Array.from(selected));
+      showSuccess(res.detail);
+      onSuccess();
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string; locked_report_ids?: number[] } } };
+      const detail = e?.response?.data?.detail ?? "Failed to generate records.";
+      const locked = e?.response?.data?.locked_report_ids;
+      showError(locked ? `${detail} (locked: ${locked.join(", ")})` : detail);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl flex flex-col max-h-[85vh]">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <div>
+            <h3 className="font-heading text-lg font-semibold">Generate Commission Records</h3>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Select reports to include in <strong>{cycle.name}</strong>
+            </p>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          {isLoading && (
+            <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" /><span className="text-sm">Loading reports…</span>
+            </div>
+          )}
+          {isError && (
+            <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0" />Failed to load available reports.
+            </div>
+          )}
+          {!isLoading && !isError && reports.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-8">No processed reports available.</p>
+          )}
+          {!isLoading && !isError && reports.length > 0 && (
+            <>
+              {/* Select-all */}
+              <div className="flex items-center gap-3 pb-2 border-b border-border">
+                <input type="checkbox" id="select-all" checked={allSelected} onChange={toggleAll}
+                  disabled={selectableIds.length === 0}
+                  className="h-4 w-4 rounded border-border accent-primary" />
+                <label htmlFor="select-all" className="text-sm font-medium text-foreground cursor-pointer">
+                  Select all unlocked ({selectableIds.length})
+                </label>
+              </div>
+
+              {/* Report rows — newest first from backend */}
+              {reports.map(r => {
+                const isSelectable = !r.is_locked;
+                const isChecked    = selected.has(r.id);
+                return (
+                  <div key={r.id} onClick={() => isSelectable && toggle(r.id)}
+                    className={cn(
+                      "flex items-start gap-3 rounded-lg border px-4 py-3 transition-colors",
+                      isSelectable
+                        ? isChecked
+                          ? "border-primary/40 bg-primary/5 cursor-pointer"
+                          : "border-border hover:bg-accent/50 cursor-pointer"
+                        : "border-border/50 bg-accent/20 opacity-60 cursor-not-allowed",
+                    )}>
+                    <input type="checkbox" checked={isChecked} disabled={!isSelectable}
+                      onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()}
+                      className="mt-0.5 h-4 w-4 rounded border-border accent-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-foreground truncate">{r.filename}</p>
+                        {r.is_used && (
+                          <span className="rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 text-[10px] font-medium shrink-0">
+                            Used before
+                          </span>
+                        )}
+                        {r.is_locked && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20 px-2 py-0.5 text-[10px] font-medium shrink-0">
+                            <Lock className="h-2.5 w-2.5" />
+                            Locked ({r.locked_ba_count} BA{r.locked_ba_count !== 1 ? "s" : ""} approved/paid)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {r.period || "No period set"} · {r.total_records.toLocaleString()} rows · {r.matched} matched
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Uploaded {new Date(r.uploaded_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}
+                      </p>
+                    </div>
+                    {isChecked && isSelectable && <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-border shrink-0 flex items-center justify-between gap-3">
+          <p className="text-xs text-muted-foreground">{selected.size} report{selected.size !== 1 ? "s" : ""} selected</p>
+          <div className="flex gap-2">
+            <button onClick={onClose} disabled={generating}
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50">
+              Cancel
+            </button>
+            <button onClick={handleGenerate} disabled={generating || selected.size === 0}
+              className="flex items-center gap-2 rounded-md bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity">
+              {generating && <Loader2 className="h-4 w-4 animate-spin" />}
+              {generating ? "Generating…" : `Generate from ${selected.size} report${selected.size !== 1 ? "s" : ""}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Cycles Tab ────────────────────────────────────────────────────────────────
 
 function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boolean }) {
-  const [showAdd,       setShowAdd]       = useState(false);
-  const [closeConfirm,  setCloseConfirm]  = useState<CommissionCycle | null>(null);
+  const [showAdd,         setShowAdd]         = useState(false);
+  const [closeConfirm,    setCloseConfirm]    = useState<CommissionCycle | null>(null);
+  const [generateTarget,  setGenerateTarget]  = useState<CommissionCycle | null>(null);
   const { data: cycles = [], isLoading, isError, refetch } = useCommissionCycles(dealerId);
   const closeCycle = useCloseCycle();
 
@@ -454,14 +627,7 @@ function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boole
                       <div className="flex items-center gap-1.5">
                         {c.status === "open" && (
                           <button
-                            onClick={async () => {
-                              try {
-                                const res = await api.post(ENDPOINTS.GENERATE_CYCLE_RECORDS(c.id));
-                                showSuccess(res.data.detail);
-                              } catch {
-                                showError("Failed to generate records.");
-                              }
-                            }}
+                            onClick={() => setGenerateTarget(c)}
                             className="flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors">
                             <RefreshCw className="h-3 w-3" /> Generate Records
                           </button>
@@ -490,6 +656,14 @@ function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boole
         onClose={() => setShowAdd(false)}
         onSuccess={() => setShowAdd(false)}
       />
+
+      {generateTarget && (
+        <GenerateRecordsModal
+          cycle={generateTarget}
+          onClose={() => setGenerateTarget(null)}
+          onSuccess={() => { setGenerateTarget(null); refetch(); }}
+        />
+      )}
 
       {closeConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -622,6 +796,9 @@ function RecordsTab({
 }) {
   const [cycleFilter,     setCycleFilter]     = useState<number | undefined>(undefined);
   const [statusFilter,    setStatusFilter]    = useState<string>("");
+  const [searchFilter,    setSearchFilter]    = useState<string>("");
+  const [page,            setPage]            = useState(1);
+  const PAGE_SIZE = 20;
   const [actionRecord,    setActionRecord]    = useState<CommissionRecord | null>(null);
   const [actionType,      setActionType]      = useState<"approve" | "reject" | null>(null);
   const [payoutRecord,    setPayoutRecord]    = useState<CommissionRecord | null>(null);
@@ -634,17 +811,27 @@ function RecordsTab({
   const isScoped = scopeRole === "branch_manager" || scopeRole === "van_team_leader";
 
   const { data: cycles  = [] } = useCommissionCycles(dealerId);
-  const { data: records = [], isLoading, isError, refetch } = useCommissionRecords({
+  const recordsQueryParams = useMemo(() => ({
     ...(cycleFilter  ? { cycle:  cycleFilter }                                : {}),
     ...(statusFilter ? { status: statusFilter as CommissionRecord["status"] } : {}),
+    ...(searchFilter.trim() ? { search: searchFilter.trim() }                 : {}),
     ...(scopeRole === "branch_manager"  && scopeBranchId ? { branch:   scopeBranchId } : {}),
     ...(scopeRole === "van_team_leader" && scopeVanId    ? { van_team: scopeVanId    } : {}),
-  });
+    page,
+  }), [cycleFilter, statusFilter, searchFilter, scopeRole, scopeBranchId, scopeVanId, page]);
 
-  const totalNet   = records.reduce((s, r) => s + Number(r.net_amount),  0);
-  const totalGross = records.reduce((s, r) => s + Number(r.gross_amount), 0);
-  const pending    = records.filter(r => r.status === "pending").length;
-  const approved   = records.filter(r => r.status === "approved").length;
+  const { data: recordsData, isLoading, isError, refetch } = useCommissionRecords(recordsQueryParams);
+  const records    = recordsData?.results ?? [];
+  const totalCount = recordsData?.count   ?? 0;
+
+  useEffect(() => { setPage(1); }, [cycleFilter, statusFilter, searchFilter]);
+
+  const totalNet         = records.reduce((s, r) => s + Number(r.net_amount),  0);
+  const totalGross       = records.reduce((s, r) => s + Number(r.gross_amount), 0);
+  const pending          = records.filter(r => r.status === "pending").length;
+  const approved         = records.filter(r => r.status === "approved").length;
+  const totalPages       = Math.ceil(totalCount / PAGE_SIZE);
+  const paginatedRecords = records; // backend already sliced the page
 
   return (
     <div className="space-y-4">
@@ -675,6 +862,14 @@ function RecordsTab({
       {/* Filters — hidden for scoped roles */}
       {!isScoped && (
         <div className="flex flex-wrap gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              value={searchFilter}
+              onChange={e => setSearchFilter(e.target.value)}
+              placeholder="Search agent…"
+              className="rounded-md border border-border bg-accent py-1.5 pl-9 pr-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary w-48" />
+          </div>
           <select
             value={cycleFilter ?? ""}
             onChange={e => setCycleFilter(e.target.value ? Number(e.target.value) : undefined)}
@@ -733,7 +928,7 @@ function RecordsTab({
               </tr>
             </thead>
             <tbody>
-              {records.map(r => {
+              {paginatedRecords.map(r => {
                 const cycleName = cycles.find(c => c.id === r.cycle)?.name ?? `#${r.cycle}`;
                 return (
                   <tr key={r.id} className="border-b border-border/50 hover:bg-accent/40 transition-colors">
@@ -796,6 +991,50 @@ function RecordsTab({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!isLoading && !isError && totalCount > PAGE_SIZE && (
+        <div className="flex items-center justify-between pt-2 flex-wrap gap-3">
+          <p className="text-xs text-muted-foreground">
+            Showing {Math.min((page - 1) * PAGE_SIZE + 1, totalCount)}–{Math.min(page * PAGE_SIZE, totalCount)} of {totalCount} records
+          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="rounded-md border border-border bg-accent px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent/80 disabled:opacity-40 transition-colors">
+              ← Prev
+            </button>
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
+              .reduce<(number | "...")[]>((acc, p, idx, arr) => {
+                if (idx > 0 && (p as number) - (arr[idx - 1] as number) > 1) acc.push("...");
+                acc.push(p);
+                return acc;
+              }, [])
+              .map((p, i) =>
+                p === "..." ? (
+                  <span key={`e-${i}`} className="px-1 text-xs text-muted-foreground">…</span>
+                ) : (
+                  <button key={p} onClick={() => setPage(p as number)}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-xs font-medium transition-colors min-w-[2rem]",
+                      page === p
+                        ? "bg-primary text-primary-foreground"
+                        : "border border-border bg-accent text-foreground hover:bg-accent/80"
+                    )}>
+                    {p}
+                  </button>
+                )
+              )}
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="rounded-md border border-border bg-accent px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent/80 disabled:opacity-40 transition-colors">
+              Next →
+            </button>
+          </div>
         </div>
       )}
 
@@ -1216,7 +1455,8 @@ function BARecordDetailModal({
 // ── BA: My Commission View (no tabs — personal card layout) ───────────────────
 
 function BACommissionView({ userId, dealerId }: { userId: number; dealerId: number }) {
-  const { data: records = [], isLoading, isError } = useCommissionRecords({ agent: userId });
+  const { data: rawRecords, isLoading, isError } = useCommissionRecords({ agent: userId });
+  const records = rawRecords?.results ?? [];
   const { data: rules   = [] } = useCommissionRules(dealerId);
   const { data: cycles  = [] } = useCommissionCycles(dealerId);
   const [detailRecord, setDetailRecord] = useState<CommissionRecord | null>(null);

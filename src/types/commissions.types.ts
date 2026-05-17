@@ -122,6 +122,13 @@ export interface CreatePayoutRequest {
   reference?: string;
 }
 
+export interface PaginatedResponse<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
 export interface CommissionRecordFilterParams {
   cycle?:    number;
   agent?:    number;
@@ -153,6 +160,20 @@ export interface BASimRow {
   ba_msisdn:        string | null;
   topup_amount:     number;
   issued_at:        string;
+}
+
+export interface CycleAvailableReport {
+  id:              number;
+  filename:        string;
+  period:          string;
+  period_start:    string | null;
+  period_end:      string | null;
+  total_records:   number;
+  matched:         number;
+  uploaded_at:     string;
+  is_locked:       boolean;
+  locked_ba_count: number;
+  is_used:         boolean;
 }
 
 export interface BASimBreakdownResponse {
