@@ -60,6 +60,14 @@ export function useResetReport() {
   });
 }
 
+export function useDeleteReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => reconciliationService.deleteReport(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reconciliationReports"] }),
+  });
+}
+
 export function useFraudSummary() {
   return useQuery({
     queryKey: ["fraudSummary"],

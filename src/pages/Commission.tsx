@@ -4,9 +4,12 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import api from "@/lib/api";
+import { ENDPOINTS } from "@/constants/endpoints";
 import { useAuth } from "@/contexts/AuthContext";
 import { StatusBadge } from "@/components/StatusBadge";
 import { showSuccess, showError } from "@/lib/toast";
+import { useMutation } from "@tanstack/react-query";
 import { commissionsService } from "@/api/commissions.service";
 import {
   useCommissionRules,
@@ -554,13 +557,26 @@ function GenerateRecordsModal({
 }
 
 // ── Cycles Tab ────────────────────────────────────────────────────────────────
+// Make sure these are in your imports at the top of Commission.tsx:
+//   import api from "@/lib/api";
+//   import { useMutation } from "@tanstack/react-query";   ← likely already imported
 
-function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boolean }) {
+function CyclesTab({ dealerId, canManage, onGenerated }: { dealerId: number; canManage: boolean; onGenerated?: () => void }) {
   const [showAdd,         setShowAdd]         = useState(false);
+  const [deleteConfirm,   setDeleteConfirm]   = useState<CommissionCycle | null>(null);  // already existed
   const [closeConfirm,    setCloseConfirm]    = useState<CommissionCycle | null>(null);
   const [generateTarget,  setGenerateTarget]  = useState<CommissionCycle | null>(null);
+
   const { data: cycles = [], isLoading, isError, refetch } = useCommissionCycles(dealerId);
+
   const closeCycle = useCloseCycle();
+
+  // ── NEW: delete mutation ───────────────────────────────────────────────────
+  const deleteCycle = useMutation({
+    mutationFn: (id: number) =>
+      api.delete(ENDPOINTS.DELETE_CYCLE(id)).then(r => r.data),
+    onSuccess: () => refetch(),
+  });
 
   return (
     <div className="space-y-4">
@@ -640,6 +656,15 @@ function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boole
                             <Lock className="h-3 w-3" /> Close Cycle
                           </button>
                         )}
+                        {/* ── NEW: Delete button (open cycles only) ── */}
+                        {(c.status === "open" || c.status === "closed") && (
+                          <button
+                            onClick={() => setDeleteConfirm(c)}
+                            disabled={deleteCycle.isPending}
+                            className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50">
+                            <X className="h-3 w-3" /> Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   )}
@@ -661,10 +686,11 @@ function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boole
         <GenerateRecordsModal
           cycle={generateTarget}
           onClose={() => setGenerateTarget(null)}
-          onSuccess={() => { setGenerateTarget(null); refetch(); }}
+          onSuccess={() => { setGenerateTarget(null); refetch(); onGenerated?.(); }}
         />
       )}
 
+      {/* ── Close Cycle confirmation modal (unchanged) ── */}
       {closeConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-background/60 backdrop-blur-sm" onClick={() => setCloseConfirm(null)} />
@@ -692,6 +718,53 @@ function CyclesTab({ dealerId, canManage }: { dealerId: number; canManage: boole
                 className="flex-1 flex items-center justify-center gap-2 rounded-md bg-amber-600 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity">
                 {closeCycle.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
                 Close Cycle
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── NEW: Delete Cycle confirmation modal ── */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-background/60 backdrop-blur-sm"
+            onClick={() => setDeleteConfirm(null)} />
+          <div className="relative w-full max-w-sm rounded-xl border border-destructive/40 bg-card shadow-2xl p-6">
+            <h3 className="font-heading text-lg font-semibold mb-2">Delete Cycle</h3>
+            <p className="text-sm text-muted-foreground mb-3">
+              Delete <strong>{deleteConfirm.name}</strong>? This will permanently remove
+              the cycle and all its commission records.
+            </p>
+            <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-2.5 mb-5 space-y-1">
+              {deleteConfirm.status === "closed" && (
+                <p className="text-xs font-semibold text-destructive">
+                  ⚠️ This cycle is closed — deleting it will undo the close action.
+                </p>
+              )}
+              <p className="text-xs text-destructive">
+                All pending and rejected records will be permanently deleted.
+                Cycles with approved or paid records cannot be deleted.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setDeleteConfirm(null)}
+                className="flex-1 rounded-md border border-border py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors">
+                Cancel
+              </button>
+              <button
+                disabled={deleteCycle.isPending}
+                onClick={async () => {
+                  try {
+                    await deleteCycle.mutateAsync(deleteConfirm.id);
+                    showSuccess(`Cycle "${deleteConfirm.name}" deleted.`);
+                    setDeleteConfirm(null);
+                  } catch {
+                    showError("Cannot delete this cycle. It may have approved or paid records.");
+                  }
+                }}
+                className="flex-1 flex items-center justify-center gap-2 rounded-md bg-destructive py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity">
+                {deleteCycle.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                Delete Cycle
               </button>
             </div>
           </div>
@@ -804,7 +877,7 @@ function RecordsTab({
   const [payoutRecord,    setPayoutRecord]    = useState<CommissionRecord | null>(null);
   const [breakdownRecord,  setBreakdownRecord]  = useState<CommissionRecord | null>(null);
   const [simBreakdownTarget, setSimBreakdownTarget] = useState<{
-    baId: number; baName: string; startDate?: string; endDate?: string;
+    baId: number; baName: string; cycleId?: number; startDate?: string; endDate?: string;
   } | null>(null);
 
   // Scoped roles see filtered records, no dropdowns needed
@@ -954,6 +1027,7 @@ function RecordsTab({
                                 setSimBreakdownTarget({
                                   baId:      r.agent,
                                   baName:    r.agent_name,
+                                  cycleId:   r.cycle,        // ← add this
                                   startDate: cycle?.start_date,
                                   endDate:   cycle?.end_date,
                                 });
@@ -1049,6 +1123,7 @@ function RecordsTab({
         <BASimBreakdownModal
           baId={simBreakdownTarget.baId}
           baName={simBreakdownTarget.baName}
+          cycleId={simBreakdownTarget.cycleId}
           startDate={simBreakdownTarget.startDate}
           endDate={simBreakdownTarget.endDate}
           onClose={() => setSimBreakdownTarget(null)}
@@ -1657,25 +1732,27 @@ const SIM_STATUS_COLORS: Record<string, string> = {
 };
 
 function BASimBreakdownModal({
-  baId, baName, startDate, endDate, onClose,
+  baId, baName, cycleId, startDate, endDate, onClose,
 }: {
   baId: number; baName: string;
+  cycleId?: number;
   startDate?: string; endDate?: string;
   onClose: () => void;
 }) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch]             = useState("");
   const [filterResult, setFilterResult] = useState("");
 
   const { data, isLoading, isError } = useBASimBreakdown({
-    ba_id: baId,
+    ba_id:      baId,
+    cycle_id:   cycleId,
     start_date: startDate,
-    end_date: endDate,
+    end_date:   endDate,
   });
 
   const rows = useMemo(() => {
     if (!data?.sims) return [];
     return data.sims.filter(r => {
-      const matchSearch = !search || r.serial_number.includes(search);
+      const matchSearch = !search       || r.serial_number.includes(search);
       const matchFilter = !filterResult || r.recon_result === filterResult;
       return matchSearch && matchFilter;
     });
@@ -1684,7 +1761,7 @@ function BASimBreakdownModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-background/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-4xl rounded-xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-5xl rounded-xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]">
 
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-6 py-4 shrink-0">
@@ -1693,7 +1770,9 @@ function BASimBreakdownModal({
               SIM Accountability — {baName}
             </h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Every SIM issued to this BA cross-referenced with Safaricom's report
+              {data?.cycle_name
+                ? `Cycle: ${data.cycle_name}`
+                : data?.period ?? "Every SIM issued to this BA cross-referenced with Safaricom's reports"}
             </p>
           </div>
           <button onClick={onClose}
@@ -1704,13 +1783,14 @@ function BASimBreakdownModal({
 
         {/* KPI strip */}
         {data && (
-          <div className="grid grid-cols-5 gap-0 border-b border-border shrink-0">
+          <div className="grid grid-cols-6 gap-0 border-b border-border shrink-0">
             {[
-              { label: "Total Issued",    value: data.total_issued,  color: "text-foreground"  },
-              { label: "Confirmed ✅",    value: data.confirmed,     color: "text-green-500"   },
-              { label: "Missing 🔍",      value: data.not_in_report, color: "text-amber-500"   },
-              { label: "Rejected ❌",     value: data.rejected,      color: "text-destructive" },
-              { label: "Commission",      value: `KES ${data.total_commission.toLocaleString()}`, color: "text-primary" },
+              { label: "Total Issued",       value: data.total_issued,         color: "text-foreground"  },
+              { label: "Confirmed ✅",        value: data.confirmed,            color: "text-green-500"   },
+              { label: "Missing 🔍",          value: data.not_in_report,        color: "text-amber-500"   },
+              { label: "Overdue ⚠️",          value: data.overdue_count,        color: data.overdue_count > 0 ? "text-red-500" : "text-muted-foreground" },
+              { label: "Rejected ❌",         value: data.rejected,             color: "text-destructive" },
+              { label: "Commission",          value: `KES ${data.total_commission.toLocaleString()}`, color: "text-primary" },
             ].map(({ label, value, color }) => (
               <div key={label} className="px-4 py-3 border-r border-border last:border-r-0 text-center">
                 <p className="text-xs text-muted-foreground">{label}</p>
@@ -1720,14 +1800,42 @@ function BASimBreakdownModal({
           </div>
         )}
 
+        {/* Reports used in this period */}
+        {data && data.reports_seen.length > 0 && (
+          <div className="px-6 py-2 border-b border-border shrink-0 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">Reports in period:</span>
+            {data.reports_seen.map((r: { id: number; filename: string; period: string }) => (
+              <span key={r.id}
+                className="text-xs bg-accent border border-border rounded-full px-2 py-0.5 text-muted-foreground"
+                title={r.period}>
+                {r.filename}
+              </span>
+            ))}
+            {data.total_reports_in_period === 0 && (
+              <span className="text-xs text-amber-500">No Safaricom reports found for this period</span>
+            )}
+          </div>
+        )}
+
         {/* Missing SIMs alert */}
         {data && data.not_in_report > 0 && (
-          <div className="mx-6 mt-4 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 shrink-0">
+          <div className="mx-6 mt-3 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 shrink-0">
             <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
             <p className="text-sm text-amber-500">
-              <span className="font-semibold">{data.not_in_report} SIM(s)</span> were issued to {baName} but
-              do not appear in any Safaricom report. {baName} cannot be paid commission for these —
-              they must be returned, marked lost, or escalated.
+              <span className="font-semibold">{data.not_in_report} SIM(s)</span> issued to {baName} do not appear
+              in any Safaricom report for this period. These cannot be paid commission until accounted for.
+            </p>
+          </div>
+        )}
+
+        {/* Overdue alert */}
+        {data && data.overdue_count > 0 && (
+          <div className="mx-6 mt-2 flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 shrink-0">
+            <AlertCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+            <p className="text-sm text-red-500">
+              <span className="font-semibold">{data.overdue_count} SIM(s)</span> have passed through{" "}
+              <span className="font-semibold">2 or more</span> Safaricom reports without appearing.
+              These require immediate escalation — mark as lost or investigate with Safaricom.
             </p>
           </div>
         )}
@@ -1776,13 +1884,15 @@ function BASimBreakdownModal({
                   <th className="pb-3 px-2 text-left font-medium">Issued At</th>
                   <th className="pb-3 px-2 text-left font-medium">Inventory Status</th>
                   <th className="pb-3 px-2 text-left font-medium">Safaricom Result</th>
+                  <th className="pb-3 px-2 text-left font-medium">Confirmed By</th>
+                  <th className="pb-3 px-2 text-left font-medium">Reports Seen</th>
                   <th className="pb-3 px-2 text-right font-medium">Commission</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-12 text-center text-sm text-muted-foreground">
+                    <td colSpan={7} className="py-12 text-center text-sm text-muted-foreground">
                       No SIMs match your filter.
                     </td>
                   </tr>
@@ -1790,7 +1900,8 @@ function BASimBreakdownModal({
                   <tr key={row.serial_number}
                     className={cn(
                       "border-b border-border/50 transition-colors hover:bg-accent/40",
-                      row.recon_result === "not_in_report" && "border-l-2 border-l-amber-500"
+                      row.overdue         && "border-l-2 border-l-red-500",
+                      !row.overdue && row.recon_result === "not_in_report" && "border-l-2 border-l-amber-500",
                     )}>
                     <td className="py-3 px-2">
                       <span className="font-mono text-xs text-primary">{row.serial_number}</span>
@@ -1807,16 +1918,35 @@ function BASimBreakdownModal({
                       </span>
                     </td>
                     <td className="py-3 px-2">
-                      <span className={cn(
-                        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-                        RECON_COLORS[row.recon_result] ?? "bg-accent text-muted-foreground border-border"
-                      )}>
-                        {row.verdict}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                          RECON_COLORS[row.recon_result] ?? "bg-accent text-muted-foreground border-border"
+                        )}>
+                          {row.verdict}
+                        </span>
+                        {row.overdue && (
+                          <span className="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-500">
+                            Overdue
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-2 text-xs text-muted-foreground">
+                      {row.confirmed_by_report
+                        ? <span title={row.confirmed_by_report.period} className="text-xs text-foreground">
+                            {row.confirmed_by_report.filename}
+                          </span>
+                        : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    <td className="py-3 px-2 text-xs text-muted-foreground">
+                      {row.reports_seen_count} / {row.total_reports_in_period}
                     </td>
                     <td className="py-3 px-2 text-right text-xs">
                       {row.commission_amount > 0
-                        ? <span className="text-green-500 font-medium">KES {row.commission_amount.toLocaleString()}</span>
+                        ? <span className="text-green-500 font-medium">
+                            KES {row.commission_amount.toLocaleString()}
+                          </span>
                         : <span className="text-muted-foreground">—</span>}
                     </td>
                   </tr>
@@ -1907,7 +2037,7 @@ export default function Commission() {
 
       <div className="rounded-lg border border-border bg-card p-6">
         {activeTab === "rules"      && <RulesTab      dealerId={dealerId} />}
-        {activeTab === "cycles"     && <CyclesTab     dealerId={dealerId} canManage={canManageCycles} />}
+        {activeTab === "cycles"     && <CyclesTab dealerId={dealerId} canManage={canManageCycles} onGenerated={() => setActiveTab("records")} />}
         {activeTab === "records"    && (
           <RecordsTab
             dealerId={dealerId}

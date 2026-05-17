@@ -4,7 +4,7 @@ import {
   AlertCircle, X, ChevronDown, ChevronUp, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useReports, useUploadReport, useProcessReport, useResetReport } from "@/hooks/useReconciliation";
+import { useReports, useUploadReport, useProcessReport, useResetReport, useDeleteReport } from "@/hooks/useReconciliation";
 import { showSuccess, showError } from "@/lib/toast";
 import { DEFAULT_COLUMN_MAPPING } from "@/types/reconciliation.types";
 import type { ColumnMapping, SafaricomReport } from "@/types/reconciliation.types";
@@ -46,7 +46,9 @@ function StatusBadge({ status }: { status: string }) {
 
 function ReportRow({ report }: { report: SafaricomReport }) {
   const processReport = useProcessReport();
-  const resetReport   = useResetReport();   // ← add
+  const resetReport   = useResetReport();
+  const deleteReport  = useDeleteReport();
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const handleProcess = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -68,62 +70,135 @@ function ReportRow({ report }: { report: SafaricomReport }) {
     }
   };
 
+  const handleDelete = async () => {
+    try {
+      await deleteReport.mutateAsync(report.id);
+      showSuccess("Report deleted and all related data reversed.");
+      setShowDeleteConfirm(false);
+    } catch {
+      showError("Delete failed. Please try again.");
+    }
+  };
+
   const periodLabel = report.period_start && report.period_end
     ? `${report.period_start} → ${report.period_end}` : "—";
 
   return (
-    <tr className="border-b border-border/50 hover:bg-accent/40 transition-colors">
-      <td className="py-3 px-4 text-xs text-foreground font-mono max-w-[180px] truncate">
-        {report.filename || `Report #${report.id}`}
-      </td>
-      <td className="py-3 px-4 text-xs text-muted-foreground">{periodLabel}</td>
-      <td className="py-3 px-4 text-right text-xs text-foreground">
-        {report.total_records > 0 ? report.total_records.toLocaleString() : "—"}
-      </td>
-      <td className="py-3 px-4 text-right text-xs">
-        <span className="text-success">{report.matched}</span>
-        {" / "}
-        <span className="text-destructive">{report.unmatched}</span>
-      </td>
-      <td className="py-3 px-4"><StatusBadge status={report.status} /></td>
-      <td className="py-3 px-4 text-xs text-muted-foreground">
-        {new Date(report.uploaded_at).toLocaleDateString("en-KE", {
-          day: "numeric", month: "short", year: "numeric",
-        })}
-      </td>
-      <td className="py-3 px-4 text-right">
-        <div className="flex items-center justify-end gap-2">
-          {/* Reprocess button — shown on done/failed */}
-          {(report.status === "done" || report.status === "failed") && (
+    <>
+      <tr className="border-b border-border/50 hover:bg-accent/40 transition-colors">
+        <td className="py-3 px-4 text-xs text-foreground font-mono max-w-[180px] truncate">
+          {report.filename || `Report #${report.id}`}
+        </td>
+        <td className="py-3 px-4 text-xs text-muted-foreground">{periodLabel}</td>
+        <td className="py-3 px-4 text-right text-xs text-foreground">
+          {report.total_records > 0 ? report.total_records.toLocaleString() : "—"}
+        </td>
+        <td className="py-3 px-4 text-right text-xs">
+          <span className="text-success">{report.matched}</span>
+          {" / "}
+          <span className="text-destructive">{report.unmatched}</span>
+        </td>
+        <td className="py-3 px-4"><StatusBadge status={report.status} /></td>
+        <td className="py-3 px-4 text-xs text-muted-foreground">
+          {new Date(report.uploaded_at).toLocaleDateString("en-KE", {
+            day: "numeric", month: "short", year: "numeric",
+          })}
+        </td>
+        <td className="py-3 px-4 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {(report.status === "done" || report.status === "failed") && (
+              <button
+                onClick={handleReset}
+                disabled={resetReport.isPending}
+                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-50 transition-colors"
+              >
+                {resetReport.isPending
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <RefreshCw className="h-3 w-3" />}
+                Reprocess
+              </button>
+            )}
+            {report.status === "pending" && (
+              <button
+                onClick={handleProcess}
+                disabled={processReport.isPending}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {processReport.isPending
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Processing…</>
+                  : <><RefreshCw className="h-3 w-3" /> Process</>}
+              </button>
+            )}
             <button
-              onClick={handleReset}
-              disabled={resetReport.isPending}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-50 transition-colors"
+              onClick={() => setShowDeleteConfirm(true)}
+              className="flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors"
             >
-              {resetReport.isPending
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <RefreshCw className="h-3 w-3" />
-              }
-              Reprocess
+              <X className="h-3 w-3" /> Delete
             </button>
-          )}
+          </div>
+        </td>
+      </tr>
 
-          {/* Process button — shown on pending */}
-          {report.status === "pending" && (
-            <button
-              onClick={handleProcess}
-              disabled={processReport.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
-            >
-              {processReport.isPending
-                ? <><Loader2 className="h-3 w-3 animate-spin" /> Processing…</>
-                : <><RefreshCw className="h-3 w-3" /> Process</>
-              }
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <tr>
+          <td colSpan={7} className="p-0">
+            <div className="fixed inset-0 z-50 flex items-center justify-center">
+              <div className="absolute inset-0 bg-background/60 backdrop-blur-sm"
+                onClick={() => setShowDeleteConfirm(false)} />
+              <div className="relative w-full max-w-md rounded-xl border border-destructive/40 bg-card shadow-2xl p-6">
+                <div className="flex items-start gap-3 mb-4">
+                  <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="font-heading text-base font-semibold text-foreground">
+                      Delete this report?
+                    </h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      <span className="font-medium text-foreground">
+                        {report.filename || `Report #${report.id}`}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 mb-5 space-y-1.5">
+                  <p className="text-xs font-semibold text-destructive">This will permanently:</p>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    <li>• Delete all {report.total_records.toLocaleString()} reconciliation records</li>
+                    <li>• Reset all SIMs activated by this report back to issued/in-stock</li>
+                    <li>• Remove fraud flags set by this report</li>
+                    <li>• Delete pending commission records for affected BAs</li>
+                    <li>• Remove this report from all cycle audit trails</li>
+                  </ul>
+                  <p className="text-xs text-destructive font-medium pt-1">
+                    This cannot be undone.
+                  </p>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowDeleteConfirm(false)}
+                    disabled={deleteReport.isPending}
+                    className="flex-1 rounded-md border border-border py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleteReport.isPending}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-md bg-destructive py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+                  >
+                    {deleteReport.isPending
+                      ? <><Loader2 className="h-4 w-4 animate-spin" /> Deleting…</>
+                      : "Yes, delete report"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

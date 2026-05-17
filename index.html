@@ -84,39 +84,5 @@
       Placed at end of body so it never blocks the app from loading.
       Uses a module-style registration so Vite/build tools can manage the SW path correctly.
     -->
-    <script>
-      if ("serviceWorker" in navigator) {
-        window.addEventListener("load", function () {
-          navigator.serviceWorker
-            .register("/sw.js", { scope: "/" })
-            .then(function (registration) {
-              console.log(
-                "[SimTrack SW] Registered, scope:",
-                registration.scope,
-              );
-
-              // When a new SW is waiting, reload to activate it immediately
-              registration.addEventListener("updatefound", function () {
-                const newWorker = registration.installing;
-                if (!newWorker) return;
-                newWorker.addEventListener("statechange", function () {
-                  if (
-                    newWorker.state === "installed" &&
-                    navigator.serviceWorker.controller
-                  ) {
-                    // New content is available — optionally notify the user
-                    console.log("[SimTrack SW] New version available.");
-                    // Uncomment to auto-reload on update:
-                    // window.location.reload();
-                  }
-                });
-              });
-            })
-            .catch(function (err) {
-              console.error("[SimTrack SW] Registration failed:", err);
-            });
-        });
-      }
-    </script>
   </body>
 </html>

@@ -151,15 +151,20 @@ export interface DeductionRule {
 }
 
 export interface BASimRow {
-  serial_number:    string;
-  current_status:   string;
-  recon_result:     string;
-  verdict:          string;
-  commission_amount: number;
-  fraud_flag:       boolean;
-  ba_msisdn:        string | null;
-  topup_amount:     number;
-  issued_at:        string;
+  serial_number:             string;
+  current_status:            string;
+  recon_result:              string;
+  verdict:                   string;
+  commission_amount:         number;
+  fraud_flag:                boolean;
+  ba_msisdn:                 string | null;
+  topup_amount:              number;
+  issued_at:                 string;
+  confirmed_by_report:       { id: number; filename: string; period: string } | null;
+  reports_seen_count:        number;
+  reports_missed:            number;
+  total_reports_in_period:   number;
+  overdue:                   boolean;
 }
 
 export interface CycleAvailableReport {
@@ -177,13 +182,18 @@ export interface CycleAvailableReport {
 }
 
 export interface BASimBreakdownResponse {
-  ba_id:            number;
-  ba_name:          string;
-  total_issued:     number;
-  confirmed:        number;
-  not_in_report:    number;
-  rejected:         number;
-  fraud_flagged:    number;
-  total_commission: number;
-  sims:             BASimRow[];
+  ba_id:                     number;
+  ba_name:                   string;
+  cycle_name:                string | null;
+  period:                    string | null;
+  total_issued:              number;
+  confirmed:                 number;
+  not_in_report:             number;
+  rejected:                  number;
+  fraud_flagged:             number;
+  overdue_count:             number;
+  total_reports_in_period:   number;
+  reports_seen:              { id: number; filename: string; period: string }[];
+  total_commission:          number;
+  sims:                      BASimRow[];
 }

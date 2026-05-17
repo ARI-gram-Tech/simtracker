@@ -1,8 +1,7 @@
 // src/components/NotificationsPanel.tsx
 import { useState } from "react";
-import { X, Bell, CheckCheck, Loader2, AlertCircle, Info, DollarSign, Package, CornerDownLeft, RefreshCw } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useNotifications, useMarkRead, useMarkAllRead } from "@/hooks/useNotifications";
+import { X, Bell, BellOff, Trash2, CheckCheck, Loader2, AlertCircle, Info, DollarSign, Package, CornerDownLeft, RefreshCw } from "lucide-react";
+import { cn } from "@/lib/utils";import { useNotifications, useMarkRead, useMarkAllRead, useClearAll, useSilentMode } from "@/hooks/useNotifications";
 import type { Notification, NotificationType } from "@/types/notifications.types";
 
 interface NotificationsPanelProps {
@@ -90,6 +89,62 @@ function NotificationRow({
   );
 }
 
+function SilentToggle() {
+  const { silent, toggle } = useSilentMode();
+  return (
+    <button
+      onClick={toggle}
+      title={silent ? "Notifications muted — click to unmute" : "Mute toast notifications"}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+        silent
+          ? "bg-amber-500/10 text-amber-500 border border-amber-500/20 hover:bg-amber-500/20"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent"
+      )}
+    >
+      {silent ? <BellOff className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
+      {silent ? "Muted" : "Mute"}
+    </button>
+  );
+}
+
+function ClearAllButton() {
+  const clearAll = useClearAll();
+  const [confirm, setConfirm] = useState(false);
+
+  if (confirm) {
+    return (
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-muted-foreground">Sure?</span>
+        <button
+          onClick={async () => { await clearAll.mutateAsync(); setConfirm(false); }}
+          disabled={clearAll.isPending}
+          className="rounded-md px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
+        >
+          {clearAll.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Yes"}
+        </button>
+        <button
+          onClick={() => setConfirm(false)}
+          className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent transition-colors"
+        >
+          No
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setConfirm(true)}
+      title="Clear all notifications"
+      className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+    >
+      <Trash2 className="h-3.5 w-3.5" />
+      Clear
+    </button>
+  );
+}
+
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
@@ -142,7 +197,14 @@ export function NotificationsPanel({ open, onClose }: NotificationsPanelProps) {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            {/* Silent mode toggle */}
+            <SilentToggle />
+
+            {/* Clear all */}
+            <ClearAllButton />
+
+            {/* Mark all read */}
             {unreadCount > 0 && (
               <button
                 onClick={handleMarkAllRead}

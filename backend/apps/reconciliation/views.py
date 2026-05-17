@@ -775,3 +775,129 @@ class RaiseComplaintView(APIView):
             )
 
         return Response({"detail": f"Complaint raised for {serial}. Managers notified."})
+
+
+class DeleteReportView(APIView):
+    """
+    DELETE /reconciliation/reports/<pk>/delete/
+    Permanently deletes a report and reverses everything it caused:
+    - Deletes all reconciliation records from this report
+    - Resets SIMs that were activated/fraud-flagged BY this report back to issued/in_stock
+    - Deletes register + flag movements created by this report
+    - Deletes pending commission records for BAs in this report
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        _assert_finance_or_admin(request.user)
+
+        dealer = _get_user_dealer(request.user)
+        qs = SafaricomReport.objects.filter(pk=pk)
+        if dealer:
+            qs = qs.filter(dealer=dealer)
+
+        try:
+            report = qs.get()
+        except SafaricomReport.DoesNotExist:
+            return Response({"detail": "Report not found."}, status=404)
+
+        if report.status == SafaricomReport.Status.PROCESSING:
+            return Response(
+                {"detail": "Report is currently processing. Wait for it to finish."},
+                status=400,
+            )
+
+        from apps.accounts.models import User as UserModel
+        from apps.notifications.models import Notification
+
+        # Collect BA ids affected by this report
+        ba_ids = list(
+            report.records.values_list("identified_ba", flat=True).distinct()
+        )
+
+        # Reset SIMs that were activated by this report back to issued/in_stock
+        affected_serials = list(
+            report.records.values_list("serial_number", flat=True)
+        )
+
+        from apps.inventory.models import SIM, SIMMovement
+
+        reset_to_issued = SIM.objects.filter(
+            serial_number__in=affected_serials,
+            status__in=["activated", "fraud_flagged"],
+            current_holder__isnull=False,
+        ).update(status="issued")
+
+        reset_to_stock = SIM.objects.filter(
+            serial_number__in=affected_serials,
+            status__in=["activated", "fraud_flagged"],
+            current_holder__isnull=True,
+        ).update(status="in_stock")
+
+        # Delete register + flag movements tied to this report
+        deleted_movements, _ = SIMMovement.objects.filter(
+            movement_type__in=["register", "flag"],
+            notes__icontains=f"Report ID {report.id}",
+        ).delete()
+
+        # Delete pending commission records for affected BAs in open cycles
+        from apps.commissions.models import CommissionRecord, CommissionCycle
+        effective_dealer = dealer or report.dealer
+        if ba_ids and effective_dealer:
+            open_cycles = CommissionCycle.objects.filter(
+                dealer=effective_dealer,
+                status=CommissionCycle.Status.OPEN,
+            )
+            deleted_commission, _ = CommissionRecord.objects.filter(
+                cycle__in=open_cycles,
+                agent_id__in=ba_ids,
+                status="pending",
+            ).delete()
+        else:
+            deleted_commission = 0
+
+        # Delete all reconciliation records for this report
+        deleted_recon, _ = report.records.all().delete()
+
+        # Remove this report id from any cycle's used_report_ids audit trail
+        if effective_dealer:
+            for cycle in CommissionCycle.objects.filter(dealer=effective_dealer):
+                used = getattr(cycle, "used_report_ids", None) or []
+                if report.id in used:
+                    cycle.used_report_ids = [r for r in used if r != report.id]
+                    cycle.save(update_fields=["used_report_ids"])
+
+        # Notify relevant users
+        if effective_dealer:
+            for recipient in UserModel.objects.filter(
+                role__in=["operations_manager", "dealer_owner"],
+                dealer_org=effective_dealer,
+                is_active=True,
+            ):
+                Notification.objects.create(
+                    recipient=recipient,
+                    title="🗑️ Safaricom Report Deleted",
+                    message=(
+                        f"Safaricom report '{report.filename}' has been permanently deleted.\n\n"
+                        f"Period: {report.period_start} to {report.period_end}\n"
+                        f"Deleted by: {request.user.full_name}\n\n"
+                        f"Reconciliation records deleted: {deleted_recon}\n"
+                        f"SIMs reset to issued: {reset_to_issued}\n"
+                        f"SIMs reset to in_stock: {reset_to_stock}\n"
+                        f"Commission records removed: {deleted_commission}\n\n"
+                        f"Affected BAs will need to be re-reconciled."
+                    ),
+                    type=Notification.Type.ALERT,
+                )
+
+        # Finally delete the report itself
+        report.delete()
+
+        return Response({
+            "detail":               f"Report '{report.filename}' permanently deleted.",
+            "recon_deleted":        deleted_recon,
+            "movements_deleted":    deleted_movements,
+            "sims_reset_issued":    reset_to_issued,
+            "sims_reset_stock":     reset_to_stock,
+            "commission_deleted":   deleted_commission,
+        })

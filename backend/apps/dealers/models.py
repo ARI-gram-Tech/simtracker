@@ -50,6 +50,8 @@ class Dealer(models.Model):
     pending_plan_change = models.CharField(
         max_length=20, choices=PLAN_CHOICES, null=True, blank=True)
     pending_plan_change_at = models.DateTimeField(null=True, blank=True)
+    is_demo = models.BooleanField(
+        default=False, help_text="Demo dealer — resets nightly.")
 
     def __str__(self):
         return self.name

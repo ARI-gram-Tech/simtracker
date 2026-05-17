@@ -1,6 +1,7 @@
 # backend/config/settings/base.py
 from pathlib import Path
 from datetime import timedelta
+from celery.schedules import crontab
 import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -22,6 +23,13 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "Africa/Nairobi"
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+CELERY_BEAT_SCHEDULE = {
+    "reset-demo-nightly": {
+        "task": "apps.demo.tasks.reset_demo_data",
+        "schedule": crontab(hour=2, minute=0),
+    },
+}
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -49,6 +57,7 @@ INSTALLED_APPS = [
     "apps.reconciliation",
     "apps.reports",
     "apps.notifications",
+    "apps.demo",
 ]
 
 MIDDLEWARE = [

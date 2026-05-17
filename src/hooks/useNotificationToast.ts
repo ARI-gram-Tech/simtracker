@@ -89,7 +89,8 @@ export function useNotificationToast() {
     );
 
     if (newNotifications.length > 0) {
-      playNotificationSound();
+      const isSilent = localStorage.getItem("notif_silent") === "true";
+      if (!isSilent) playNotificationSound();
 
       // Show toast for the most recent new notification
       const latest = newNotifications[0];

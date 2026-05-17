@@ -190,11 +190,16 @@ export function useDeleteDeductionRule() {
   });
 }
 
-export function useBASimBreakdown(params: { ba_id: number; start_date?: string; end_date?: string } | null) {
+export function useBASimBreakdown(params: {
+  ba_id: number;
+  cycle_id?: number;
+  start_date?: string;
+  end_date?: string;
+} | null) {
   return useQuery({
     queryKey: ["baSimBreakdown", params],
-    queryFn: () => commissionsService.getBASimBreakdown(params!),
-    enabled: !!params?.ba_id,
+    queryFn:  () => commissionsService.getBASimBreakdown(params!),
+    enabled:  !!params?.ba_id,
     staleTime: 30_000,
   });
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";               
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { notificationsService } from "@/api/notifications.service";
 import type { SendEmailRequest, SendNotificationRequest } from "@/types/notifications.types";
@@ -32,6 +33,28 @@ export function useMarkAllRead() {
     mutationFn: notificationsService.markAllRead,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
   });
+}
+
+export function useClearAll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: notificationsService.clearAll,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+}
+
+export function useSilentMode() {
+  const [silent, setSilent] = useState(() =>
+    localStorage.getItem("notif_silent") === "true"
+  );
+
+  const toggle = () => {
+    const next = !silent;
+    setSilent(next);
+    localStorage.setItem("notif_silent", String(next));
+  };
+
+  return { silent, toggle };
 }
 
 export function useSendEmail() {

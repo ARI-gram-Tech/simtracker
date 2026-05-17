@@ -548,9 +548,10 @@ class GenerateCycleRecordsView(APIView):
             if ba_dealer != dealer:
                 continue
 
-            internal_reg = SIM.objects.filter(
-                current_holder=ba, status=SIM.Status.REGISTERED
-            ).count()
+            internal_reg = ReconciliationRecord.objects.filter(
+                report__in=reports_qs,
+                identified_ba=ba,
+            ).values('serial_number').distinct().count()
 
             active = len(data["payable"])
             gross = round(active * rate, 2)
@@ -948,9 +949,16 @@ class DeductionPendingCountView(APIView):
 
 class BASimBreakdownView(APIView):
     """
-    GET /commissions/ba-sim-breakdown/?ba_id=5&start_date=2024-01-01&end_date=2024-01-31
-    Returns a per-SIM accountability report for a BA within a date range.
-    Cross-references inventory movements with Safaricom reconciliation results.
+    GET /commissions/ba-sim-breakdown/
+        ?ba_id=5
+        &cycle_id=3          # preferred — scopes to the cycle's batch/date range
+        &start_date=2026-01-01   # fallback if no cycle_id
+        &end_date=2026-01-31
+
+    Returns every SIM ever issued to this BA from the active/selected batch,
+    cross-referenced with ALL Safaricom reports that cover that period.
+    Each SIM row shows WHICH report confirmed/rejected/flagged it,
+    how many reports have passed without seeing it, and the current verdict.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -958,15 +966,14 @@ class BASimBreakdownView(APIView):
         _assert_finance_or_admin(request.user)
 
         ba_id = request.query_params.get("ba_id")
-        start_date = request.query_params.get("start_date")
-        end_date = request.query_params.get("end_date")
+        cycle_id = request.query_params.get("cycle_id")
 
         if not ba_id:
             return Response({"detail": "ba_id is required."}, status=400)
 
         from apps.accounts.models import User as UserModel
         from apps.inventory.models import SIM, SIMMovement
-        from apps.reconciliation.models import ReconciliationRecord
+        from apps.reconciliation.models import ReconciliationRecord, SafaricomReport
 
         dealer = _get_user_dealer(request.user)
 
@@ -978,13 +985,34 @@ class BASimBreakdownView(APIView):
         if dealer and ba.dealer_org != dealer:
             raise PermissionDenied("This BA does not belong to your dealer.")
 
-        # Date range applies to Safaricom report period, not when SIMs were issued
+        # ── Resolve date range ────────────────────────────────────────────────
+        start_date = None
+        end_date = None
+        cycle = None
+
+        if cycle_id:
+            try:
+                cycle_qs = CommissionCycle.objects.filter(pk=cycle_id)
+                if dealer:
+                    cycle_qs = cycle_qs.filter(dealer=dealer)
+                cycle = cycle_qs.get()
+                import datetime
+                start_date = cycle.start_date.isoformat() \
+                    if hasattr(cycle.start_date, "isoformat") else str(cycle.start_date)
+                end_date = cycle.end_date.isoformat() \
+                    if hasattr(cycle.end_date, "isoformat") else str(cycle.end_date)
+            except CommissionCycle.DoesNotExist:
+                return Response({"detail": "Cycle not found."}, status=404)
+        else:
+            start_date = request.query_params.get("start_date")
+            end_date = request.query_params.get("end_date")
+
+        # ── All SIMs ever issued to this BA ───────────────────────────────────
         movements_qs = SIMMovement.objects.filter(
             to_user=ba,
             movement_type="issue",
         ).select_related("sim").order_by("created_at")
 
-        # Unique serials — keep earliest issuance date per serial
         serial_to_issued_at = {}
         for m in movements_qs:
             if m.sim and m.sim.serial_number not in serial_to_issued_at:
@@ -992,40 +1020,84 @@ class BASimBreakdownView(APIView):
 
         serials_issued = list(serial_to_issued_at.keys())
 
-        # Current SIM status from inventory
+        if not serials_issued:
+            return Response({
+                "ba_id": ba.id, "ba_name": ba.full_name,
+                "total_issued": 0, "confirmed": 0,
+                "not_in_report": 0, "rejected": 0, "fraud_flagged": 0,
+                "total_commission": 0,
+                "reports_seen": [],
+                "sims": [],
+            })
+
+        # ── Current SIM status from inventory ─────────────────────────────────
         sims = {
             s.serial_number: s
             for s in SIM.objects.filter(serial_number__in=serials_issued)
         }
 
-        # Best reconciliation result per serial — filtered by REPORT PERIOD, not issue date
+        # ── Safaricom reports in this period (for this dealer) ────────────────
+        reports_qs = SafaricomReport.objects.filter(status="done")
+        if dealer:
+            reports_qs = reports_qs.filter(dealer=dealer)
+        if start_date:
+            reports_qs = reports_qs.filter(period_end__gte=start_date)
+        if end_date:
+            reports_qs = reports_qs.filter(period_start__lte=end_date)
+        reports_qs = reports_qs.order_by("period_start")
+
+        reports_list = list(reports_qs)
+        total_reports = len(reports_list)
+
+        # Report summary for the frontend header
+        reports_seen = [
+            {
+                "id":       r.id,
+                "filename": r.filename or f"Report #{r.id}",
+                "period":   f"{r.period_start} → {r.period_end}"
+                if r.period_start and r.period_end else f"Report #{r.id}",
+            }
+            for r in reports_list
+        ]
+
+        # ── Best recon result per serial (latest record wins) ─────────────────
         recon_qs = ReconciliationRecord.objects.filter(
             serial_number__in=serials_issued,
-        ).order_by("-created_at")
+            report__in=reports_list,
+        ).select_related("report").order_by("created_at")
 
-        if start_date:
-            recon_qs = recon_qs.filter(report__period_start__gte=start_date)
-        if end_date:
-            recon_qs = recon_qs.filter(report__period_end__lte=end_date)
-
-        recon_map = {}
+        # serial → list of records (chronological, one per report appearance)
+        from collections import defaultdict
+        serial_recon_map: dict = defaultdict(list)
         for r in recon_qs:
-            if r.serial_number not in recon_map:
-                recon_map[r.serial_number] = r
-        recon_map = {}
-        for r in ReconciliationRecord.objects.filter(
-            serial_number__in=serials_issued,
-        ).order_by("-created_at"):
-            if r.serial_number not in recon_map:
-                recon_map[r.serial_number] = r
+            serial_recon_map[r.serial_number].append(r)
 
-        # Build per-SIM result rows
+        # ── Build per-SIM rows ────────────────────────────────────────────────
         rows = []
         for serial in serials_issued:
             sim = sims.get(serial)
-            recon = recon_map.get(serial)
+            recons = serial_recon_map.get(serial, [])
 
-            recon_result = recon.result if recon else "not_in_report"
+            # Latest / best result
+            latest = recons[-1] if recons else None
+
+            recon_result = latest.result if latest else "not_in_report"
+            # how many reports has this SIM appeared in
+            reports_count = len(recons)
+
+            # Which report confirmed/flagged it (for display)
+            confirmed_by_report = None
+            if latest:
+                confirmed_by_report = {
+                    "id":       latest.report.id,
+                    "filename": latest.report.filename or f"Report #{latest.report.id}",
+                    "period":   f"{latest.report.period_start} → {latest.report.period_end}"
+                    if latest.report.period_start else f"Report #{latest.report.id}",
+                }
+
+            # Reports missed (reports that covered this period but didn't include this serial)
+            reports_missed = total_reports - reports_count
+
             verdict = (
                 "✅ Payable" if recon_result == "payable" else
                 "❌ Rejected" if recon_result == "rejected" else
@@ -1036,37 +1108,101 @@ class BASimBreakdownView(APIView):
             )
 
             rows.append({
-                "serial_number":    serial,
-                "current_status":   sim.status if sim else "unknown",
-                "recon_result":     recon_result,
-                "verdict":          verdict,
-                "commission_amount": float(recon.commission_amount) if recon and recon.commission_amount else 0.0,
-                "fraud_flag":       recon.fraud_flag if recon else False,
-                "ba_msisdn":        recon.ba_msisdn if recon else None,
-                "topup_amount":     float(recon.topup_amount) if recon and recon.topup_amount else 0.0,
-                "issued_at":        serial_to_issued_at[serial].isoformat(),
+                "serial_number":       serial,
+                "current_status":      sim.status if sim else "unknown",
+                "issued_at":           serial_to_issued_at[serial].isoformat(),
+                "recon_result":        recon_result,
+                "verdict":             verdict,
+                "commission_amount":   float(latest.commission_amount)
+                if latest and latest.commission_amount else 0.0,
+                "fraud_flag":          latest.fraud_flag if latest else False,
+                "topup_amount":        float(latest.topup_amount)
+                if latest and latest.topup_amount else 0.0,
+                "ba_msisdn":           latest.ba_msisdn if latest else None,
+                "confirmed_by_report": confirmed_by_report,
+                "reports_seen_count":  reports_count,
+                "reports_missed":      reports_missed,
+                "total_reports_in_period": total_reports,
+                # Flag: 2+ reports passed and still not in any → escalation signal
+                "overdue":             reports_missed >= 2 and recon_result == "not_in_report",
             })
 
-        # Sort: "not_in_report" first — those are the problem SIMs Kevin needs to answer for
-        priority = {"not_in_report": 0, "rejected": 1, "fraud": 2,
-                    "dispute": 3, "payable": 4, "ghost_sim": 5}
-        rows.sort(key=lambda x: (priority.get(
-            x["recon_result"], 9), x["serial_number"]))
+        # Sort: overdue first, then not_in_report, rejected, fraud, dispute, payable
+        priority = {
+            "not_in_report": 1, "rejected": 2, "fraud": 3,
+            "dispute": 4, "payable": 5, "ghost_sim": 6,
+        }
+        rows.sort(key=lambda x: (
+            0 if x["overdue"] else 1,
+            priority.get(x["recon_result"], 9),
+            x["serial_number"],
+        ))
 
         confirmed = sum(1 for r in rows if r["recon_result"] == "payable")
         missing = sum(1 for r in rows if r["recon_result"] == "not_in_report")
         rejected = sum(1 for r in rows if r["recon_result"] == "rejected")
         fraud = sum(1 for r in rows if r["fraud_flag"])
+        overdue_count = sum(1 for r in rows if r["overdue"])
         total_commission = sum(r["commission_amount"] for r in rows)
 
         return Response({
             "ba_id":            ba.id,
             "ba_name":          ba.full_name,
+            "cycle_name":       cycle.name if cycle else None,
+            "period":           f"{start_date} → {end_date}"
+            if start_date and end_date else None,
             "total_issued":     len(serials_issued),
             "confirmed":        confirmed,
             "not_in_report":    missing,
             "rejected":         rejected,
             "fraud_flagged":    fraud,
+            "overdue_count":    overdue_count,
+            "total_reports_in_period": total_reports,
+            "reports_seen":     reports_seen,
             "total_commission": round(total_commission, 2),
             "sims":             rows,
         })
+
+
+class DeleteCycleView(APIView):
+    """
+    DELETE /commissions/cycles/<pk>/delete/
+    Only open cycles with no approved/paid records can be deleted.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        _assert_finance_or_admin(request.user)
+
+        dealer = _get_user_dealer(request.user)
+        qs = CommissionCycle.objects.filter(pk=pk)
+        if dealer:
+            qs = qs.filter(dealer=dealer)
+
+        try:
+            cycle = qs.get()
+        except CommissionCycle.DoesNotExist:
+            return Response({"detail": "Cycle not found."}, status=404)
+
+        # Block deletion if any record is approved or paid
+        locked = CommissionRecord.objects.filter(
+            cycle=cycle,
+            status__in=["approved", "paid"],
+        ).exists()
+        if locked:
+            return Response(
+                {"detail": "Cannot delete a cycle that has approved or paid commission records."},
+                status=400,
+            )
+
+        cycle_name = cycle.name
+
+        # Delete all pending/rejected records first
+        CommissionRecord.objects.filter(cycle=cycle).delete()
+
+        cycle.delete()
+
+        return Response(
+            {"detail": f"Cycle '{cycle_name}' deleted."},
+            status=200,
+        )

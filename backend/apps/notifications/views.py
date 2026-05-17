@@ -70,6 +70,15 @@ class MarkAllReadView(APIView):
         )
 
 
+class ClearAllNotificationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        deleted, _ = Notification.objects.filter(
+            recipient=request.user).delete()
+        return Response({"detail": f"{deleted} notifications cleared."}, status=status.HTTP_200_OK)
+
+
 class UnreadCountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

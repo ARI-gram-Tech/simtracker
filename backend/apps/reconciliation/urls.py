@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    DeleteReportView,
     FraudSummaryView,
     SafaricomReportListCreateView,
     SafaricomReportDetailView,
@@ -25,5 +26,8 @@ urlpatterns = [
          name="fraud_summary"),
     path("my-history/",            MyReconciliationHistoryView.as_view(),
          name="my_recon_history"),
-    path("raise-complaint/", RaiseComplaintView.as_view(), name="raise_complaint"),
+    path("raise-complaint/", RaiseComplaintView.as_view(),
+         name="raise_complaint"),
+    path("reports/<int:pk>/delete/", DeleteReportView.as_view(),
+         name="report-delete"),
 ]

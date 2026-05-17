@@ -2,6 +2,7 @@
 
 from django.urls import path
 from .views import (
+    ClearAllNotificationsView,
     NotificationListView,
     NotificationDetailView,
     MarkReadView,
@@ -33,4 +34,7 @@ urlpatterns = [
     # Dealer owner / manager → user notification (in-app + optional email)
     path("send/",
          SendNotificationView.as_view(),    name="send_notification"),
+
+    path("clear-all/",
+         ClearAllNotificationsView.as_view(), name="notifications-clear-all"),
 ]

@@ -13,7 +13,10 @@ export const notificationsService = {
  
   markAllRead: () =>
     api.post(ENDPOINTS.MARK_ALL_READ).then(r => r.data),
- 
+
+  clearAll: () =>                                           
+    api.delete(ENDPOINTS.CLEAR_ALL).then(r => r.data),
+  
   unreadCount: () =>
     api.get<{ unread_count: number }>(ENDPOINTS.UNREAD_COUNT).then(r => r.data),
  

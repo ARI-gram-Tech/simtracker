@@ -38,7 +38,10 @@ export const reconciliationService = {
   },
 
   resetReport: (id: number) =>
-  api.post<{ detail: string }>(ENDPOINTS.RESET_REPORT(id), {}).then(r => r.data),
+    api.post<{ detail: string }>(ENDPOINTS.RESET_REPORT(id), {}).then(r => r.data),
+
+  deleteReport: (id: number) =>                                          
+    api.delete(ENDPOINTS.DELETE_REPORT(id)).then(r => r.data),
 
   processReport: (id: number) =>
     api.post<ProcessReportResponse>(ENDPOINTS.PROCESS_REPORT(id), {}).then(r => r.data),
